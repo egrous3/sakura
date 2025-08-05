@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cpr/cpr.h>
 #include <iostream>
+#include <sstream>
 #include <thread>
 #include <vector>
 
@@ -107,6 +108,13 @@ bool Sakura::renderFromMat(const cv::Mat &img, const RenderOptions &options) {
                            target_height)) {
     std::cerr << "Resize failed" << std::endl;
     return false;
+  }
+
+  if (options.mode == SIXEL) {
+    std::string sixelData = renderSixel(img);
+    printf("%s", sixelData.c_str());
+    fflush(stdout);
+    return true;
   }
 
   std::vector<std::string> lines;
@@ -266,6 +274,84 @@ Sakura::renderImageToLines(const cv::Mat &img, const RenderOptions &options) {
     return renderAsciiGrayscale(resized, charSet, options.dither);
   }
   return {};
+}
+
+// TODO: i still don't understand completely how this function works, its just a
+// textbook implementation. so read about it more
+
+// takes a bgr image, returns a 8-bit single channel img where evey pixel value
+// is an index into the output 'palette'
+cv::Mat Sakura::quantizeImage(const cv::Mat &inputImg, int numColors,
+                              cv::Mat &palette) {
+  // the image becomes a single column matrix with 3 channels
+  cv::Mat samples(inputImg.rows * inputImg.cols, 3, CV_32F);
+  for (int y = 0; y < inputImg.rows; y++) {
+    for (int x = 0; x < inputImg.cols; x++) {
+      samples.at<cv::Vec3f>(y + x * inputImg.rows, 0) =
+          inputImg.at<cv::Vec3b>(y, x);
+    }
+  }
+
+  // k means clustering
+  // this function finds 'numColors' clusters centers in the sample data
+  // these centers will become our new color palette
+  cv::Mat labels;
+  cv::kmeans(samples, numColors, labels,
+             cv::TermCriteria(cv::TermCriteria::EPS + cv::TermCriteria::COUNT,
+                              10, 1.0),
+             3, cv::KMEANS_PP_CENTERS, palette);
+  // reshaping the palette and labels
+  palette.convertTo(palette, CV_8UC3);
+  // labels contains the cluster index for each pixel
+  cv::Mat quantizedImg = labels.reshape(1, inputImg.rows);
+  return quantizedImg;
+}
+
+std::string Sakura::renderSixel(const cv::Mat &img, int paletteSize) {
+  // quantize the image
+  cv::Mat palette;
+  cv::Mat indexedImg = quantizeImage(img, paletteSize, palette);
+
+  std::stringstream sixelStream;
+  // sixel header
+  // dcs (device control string) to start sixel mode
+  sixelStream << "\x1BPq";
+
+  for (int i = 0; i < palette.rows; ++i) {
+    cv::Vec3b color = palette.at<cv::Vec3b>(i, 0);
+    sixelStream << "#" << i << ";2;"
+                << static_cast<int>(color[2] * 100.0 / 255.0) << ";" // r
+                << static_cast<int>(color[1] * 100.0 / 255.0) << ";" // g
+                << static_cast<int>(color[0] * 100.0 / 255.0);       // b
+  }
+
+  std::map<int, unsigned char>
+      colorSixelBytes; // Map<palette_index, sixel_byte>
+  // these horizontals bands are 6px high
+  for (int y = 0; y < indexedImg.rows; y += 6) {
+    for (int x = 0; x < indexedImg.cols; ++x) {
+      colorSixelBytes.clear();
+
+      for (int i = 0; i < 6; ++i) {
+        if (y + i >= indexedImg.rows)
+          continue;
+        int paletteIndex = indexedImg.at<uchar>(y + i, x);
+        colorSixelBytes[paletteIndex] |= (1 << i);
+      }
+      for (auto const &[paletteIndex, sixelByte] : colorSixelBytes) {
+        // switch to correct color aah
+        sixelStream << "#" << paletteIndex;
+        // the 6 bit value is added to 63 ('?')
+        // to make it a printable char
+        sixelStream << static_cast<char>(sixelByte + 63);
+      }
+    }
+    // emit a 'line feed' character "-";
+    sixelStream << "-";
+  }
+  // string terminator
+  sixelStream << "\x1B\\";
+  return sixelStream.str();
 }
 
 bool Sakura::renderGridFromUrls(const std::vector<std::string> &urls, int cols,

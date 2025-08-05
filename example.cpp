@@ -6,10 +6,10 @@
 int main(void) {
   Sakura sakura;
   Sakura::RenderOptions options;
-  // options.mode = Sakura::EXACT;
-  options.mode = Sakura::ASCII_GRAY;
-  options.style = Sakura::DETAILED;
-  options.dither = Sakura::FLOYD_STEINBERG;
+  options.mode = Sakura::SIXEL;
+  // options.mode = Sakura::ASCII_GRAY;
+  // options.style = Sakura::DETAILED;
+  // options.dither = Sakura::FLOYD_STEINBERG;
 
   std::string url = "https://cdn.waifu.im/7681.jpg";
   std::string gifUrl = "https://media1.tenor.com/m/lA-2hW5dSpkAAAAd/"
