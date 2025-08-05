@@ -12,7 +12,7 @@ public:
   enum DitherMode { NONE, FLOYD_STEINBERG };
 
   struct RenderOptions {
-    int width = 0; // 0 means auto-detect :D
+    int width = 0;
     int height = 0;
     CharStyle style = SIMPLE;
     RenderMode mode = EXACT;
@@ -20,6 +20,7 @@ public:
     bool aspectRatio = true;
     double contrast = 1.2;
     double brightness = 0.0;
+    double terminalAspectRatio = 2.0;
   };
 
   bool renderFromUrl(const std::string &url, const RenderOptions &options);
@@ -29,6 +30,8 @@ public:
                           const RenderOptions &options);
   bool renderGifFromUrl(const std::string &gifUrl,
                         const RenderOptions &options);
+  std::vector<std::string> renderImageToLines(const cv::Mat &img,
+                                              const RenderOptions &options);
 
 private:
   static const std::string ASCII_CHARS_SIMPLE;
@@ -37,12 +40,15 @@ private:
 
   const std::string &getCharSet(CharStyle style) const;
   static std::pair<int, int> getTerminalSize();
-  void renderExact(const cv::Mat &resized, int terminal_height);
-  void renderAsciiColor(const cv::Mat &resized);
-  void renderAsciiGrayscale(const cv::Mat &resized, const std::string &charSet,
-                            DitherMode dither);
-  std::vector<std::string> renderImageToLines(const cv::Mat &img,
-                                              const RenderOptions &options);
+  std::vector<std::string> renderExact(const cv::Mat &resized,
+                                       int terminal_height);
+  std::vector<std::string> renderAsciiColor(const cv::Mat &resized);
+  std::vector<std::string> renderAsciiGrayscale(const cv::Mat &resized,
+                                                const std::string &charSet,
+                                                DitherMode dither);
+  bool preprocessAndResize(const cv::Mat &img, const RenderOptions &options,
+                           cv::Mat &resized, int &target_width,
+                           int &target_height);
 };
 
 #endif // SAKURA_HPP
