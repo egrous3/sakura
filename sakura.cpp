@@ -2,9 +2,7 @@
 #include <chrono>
 #include <cpr/cpr.h>
 #include <iostream>
-#include <sys/ioctl.h>
 #include <thread>
-#include <unistd.h>
 #include <vector>
 
 const std::string Sakura::ASCII_CHARS_SIMPLE = " .:-=+*#%@";
@@ -12,6 +10,17 @@ const std::string Sakura::ASCII_CHARS_DETAILED =
     " .'`^\",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$";
 const std::string Sakura::ASCII_CHARS_BLOCKS = " \u2591\u2592\u2593\u2588";
 
+#ifdef _WIN32
+#include <windows.h>
+std::pair<int, int> Sakura::getTerminalSize() {
+  CONSOLE_SCREEN_BUFFER_INFO csbi;
+  GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi);
+  return {csbi.srWindow.Right - csbi.srWindow.Left + 1,
+          csbi.srWindow.Bottom - csbi.srWindow.Top + 1};
+}
+#else
+#include <sys/ioctl.h>
+#include <unistd.h>
 std::pair<int, int> Sakura::getTerminalSize() {
   struct winsize w;
   if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0) {
@@ -19,6 +28,7 @@ std::pair<int, int> Sakura::getTerminalSize() {
   }
   return {80, 24};
 }
+#endif
 
 bool Sakura::preprocessAndResize(const cv::Mat &img,
                                  const RenderOptions &options, cv::Mat &resized,
