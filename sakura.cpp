@@ -57,8 +57,9 @@ bool Sakura::preprocessAndResize(const cv::Mat &img,
 
   if (options.aspectRatio) {
     double aspectRatio = static_cast<double>(adjusted.cols) / adjusted.rows;
-    if (options.mode == EXACT || options.mode == ASCII_COLOR) {
-      aspectRatio *= options.terminalAspectRatio;
+    if (options.mode == EXACT || options.mode == ASCII_COLOR ||
+        options.mode == SIXEL) {
+      aspectRatio /= options.terminalAspectRatio;
     }
     if (aspectRatio > static_cast<double>(target_width) / target_height) {
       target_height = static_cast<int>(target_width / aspectRatio);
@@ -111,8 +112,14 @@ bool Sakura::renderFromMat(const cv::Mat &img, const RenderOptions &options) {
     return false;
   }
 
+  if (options.mode == EXACT || options.mode == ASCII_COLOR) {
+    if (resized.channels() == 1) {
+      cv::cvtColor(resized, resized, cv::COLOR_GRAY2BGR);
+    }
+  }
+
   if (options.mode == SIXEL) {
-    std::string sixelData = renderSixel(img);
+    std::string sixelData = renderSixel(resized);
     printf("%s", sixelData.c_str());
     fflush(stdout);
     return true;
@@ -209,8 +216,13 @@ Sakura::renderAsciiGrayscale(const cv::Mat &resized, const std::string &charSet,
                              DitherMode dither) {
   std::vector<std::string> lines;
   cv::Mat gray;
-  cv::cvtColor(resized, gray, cv::COLOR_BGR2GRAY);
-  int height = gray.rows / 2;
+
+  if (resized.channels() == 3) {
+    cv::cvtColor(resized, gray, cv::COLOR_BGR2GRAY);
+  } else {
+    gray = resized;
+  }
+  int height = gray.rows;
   int width = gray.cols;
   int num_chars = charSet.size();
 
@@ -266,6 +278,12 @@ Sakura::renderImageToLines(const cv::Mat &img, const RenderOptions &options) {
     return {};
   }
 
+  if (options.mode == EXACT || options.mode == ASCII_COLOR) {
+    if (resized.channels() == 1) {
+      cv::cvtColor(resized, resized, cv::COLOR_GRAY2BGR);
+    }
+  }
+
   if (options.mode == EXACT) {
     return renderExact(resized, target_height);
   } else if (options.mode == ASCII_COLOR) {
@@ -284,10 +302,17 @@ Sakura::renderImageToLines(const cv::Mat &img, const RenderOptions &options) {
 // is an index into the output 'palette'
 cv::Mat Sakura::quantizeImage(const cv::Mat &inputImg, int numColors,
                               cv::Mat &palette) {
+  cv::Mat sourceImg;
+  if (inputImg.channels() == 1) {
+    cv::cvtColor(inputImg, sourceImg, cv::COLOR_GRAY2BGR);
+  } else {
+    sourceImg = inputImg;
+  }
+
   cv::Mat smallImg;
   // resizing the img to reduce the number of pixels for k-means
   const int MAX_QUANT_DIM = 256;
-  double ratio = static_cast<ratio>(inputImg.cols) / inputImg.rows;
+  double ratio = static_cast<double>(sourceImg.cols) / sourceImg.rows;
   int w, h;
   if (ratio > 1) {
     w = MAX_QUANT_DIM;
@@ -296,7 +321,9 @@ cv::Mat Sakura::quantizeImage(const cv::Mat &inputImg, int numColors,
     h = MAX_QUANT_DIM;
     w = static_cast<int>(h * ratio);
   }
-  cv::resize(inputImg, smallImg, cv::Size(w, h), 0, 0, cv::INTER_AREA);
+  w = std::max(1, w);
+  h = std::max(1, h);
+  cv::resize(sourceImg, smallImg, cv::Size(w, h), 0, 0, cv::INTER_AREA);
 
   // the image becomes a single column matrix with 3 channels
   cv::Mat samples(smallImg.rows * smallImg.cols, 3, CV_32F);
@@ -316,14 +343,15 @@ cv::Mat Sakura::quantizeImage(const cv::Mat &inputImg, int numColors,
                               10, 1.0),
              3, cv::KMEANS_PP_CENTERS, palette);
   // reshaping the palette and labels
+  palette = palette.reshape(3, numColors);
   palette.convertTo(palette, CV_8UC3);
 
   // map the full-sized original image to new palette
   // labels contains the cluster index for each pixel
-  cv::Mat quantizedImg(inputImg.size(), CV_8U);
-  for (int y = 0; y < inputImg.rows; y++) {
-    for (int x = 0; x < inputImg.cols; x++) {
-      cv::Vec3b pixel = inputImg.at<cv::Vec3b>(y, x);
+  cv::Mat quantizedImg(sourceImg.size(), CV_8U);
+  for (int y = 0; y < sourceImg.rows; y++) {
+    for (int x = 0; x < sourceImg.cols; x++) {
+      cv::Vec3b pixel = sourceImg.at<cv::Vec3b>(y, x);
       int min_dist_sq = INT_MAX;
       int best_idx = 0;
       for (int i = 0; i < palette.rows; i++) {
@@ -360,25 +388,53 @@ std::string Sakura::renderSixel(const cv::Mat &img, int paletteSize) {
                 << static_cast<int>(color[0] * 100.0 / 255.0);       // b
   }
 
-  std::map<int, unsigned char>
-      colorSixelBytes; // Map<palette_index, sixel_byte>
+  std::vector<unsigned char> prevSixelColumn(paletteSize, 0);
+  int repeatCount = 0; // using RLE: run length encoding for huge speed boost
   // these horizontals bands are 6px high
   for (int y = 0; y < indexedImg.rows; y += 6) {
+    repeatCount = 0;
+    std::fill(prevSixelColumn.begin(), prevSixelColumn.end(), 0);
     for (int x = 0; x < indexedImg.cols; ++x) {
-      colorSixelBytes.clear();
+      std::vector<unsigned char> currentSixelColumn(paletteSize, 0);
 
       for (int i = 0; i < 6; ++i) {
         if (y + i >= indexedImg.rows)
           continue;
         int paletteIndex = indexedImg.at<uchar>(y + i, x);
-        colorSixelBytes[paletteIndex] |= (1 << i);
+        currentSixelColumn[paletteIndex] |= (1 << i);
       }
-      for (auto const &[paletteIndex, sixelByte] : colorSixelBytes) {
-        // switch to correct color aah
-        sixelStream << "#" << paletteIndex;
-        // the 6 bit value is added to 63 ('?')
-        // to make it a printable char
-        sixelStream << static_cast<char>(sixelByte + 63);
+      if (x > 0 && currentSixelColumn == prevSixelColumn) {
+        repeatCount++;
+      } else {
+        // pattern changed, flush any rle seq
+        if (repeatCount > 0) {
+          for (int p_idx = 0; p_idx < paletteSize; p_idx++) {
+            if (prevSixelColumn[p_idx] != 0) {
+              sixelStream << '!' << repeatCount
+                          << static_cast<char>(prevSixelColumn[p_idx] + 63);
+            }
+          }
+        }
+        repeatCount = 0;
+
+        // emitting the new, different column's data
+        for (int p_idx = 0; p_idx < paletteSize; p_idx++) {
+          if (currentSixelColumn[p_idx] != 0) {
+            sixelStream << '#' << p_idx
+                        << static_cast<char>(currentSixelColumn[p_idx] + 63);
+          }
+        }
+        // current column becomes prev column
+        prevSixelColumn = currentSixelColumn;
+      }
+    }
+    // after the row is done, flush any pending rle
+    if (repeatCount > 0) {
+      for (int p_idx = 0; p_idx < paletteSize; p_idx++) {
+        if (prevSixelColumn[p_idx] != 0) {
+          sixelStream << '!' << repeatCount + 1
+                      << static_cast<char>(prevSixelColumn[p_idx] + 63);
+        }
       }
     }
     // emit a 'line feed' character "-";
