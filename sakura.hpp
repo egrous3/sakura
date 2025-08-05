@@ -41,8 +41,8 @@ private:
   const std::string &getCharSet(CharStyle style) const;
   static std::pair<int, int> getTerminalSize();
   std::vector<std::string> renderExact(const cv::Mat &resized,
-                                       int terminal_height);
-  std::vector<std::string> renderAsciiColor(const cv::Mat &resized);
+                                       int terminal_height) const;
+  std::vector<std::string> renderAsciiColor(const cv::Mat &resized) const;
   std::vector<std::string> renderAsciiGrayscale(const cv::Mat &resized,
                                                 const std::string &charSet,
                                                 DitherMode dither);

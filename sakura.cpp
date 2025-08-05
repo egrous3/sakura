@@ -140,7 +140,7 @@ const std::string &Sakura::getCharSet(CharStyle style) const {
 }
 
 std::vector<std::string> Sakura::renderExact(const cv::Mat &resized,
-                                             int terminal_height) {
+                                             int terminal_height) const {
   std::vector<std::string> lines;
   int height = resized.rows / 2;
   int width = resized.cols;
@@ -169,7 +169,8 @@ std::vector<std::string> Sakura::renderExact(const cv::Mat &resized,
   return lines;
 }
 
-std::vector<std::string> Sakura::renderAsciiColor(const cv::Mat &resized) {
+std::vector<std::string>
+Sakura::renderAsciiColor(const cv::Mat &resized) const {
   std::vector<std::string> lines;
   int height = resized.rows;
   int width = resized.cols;
