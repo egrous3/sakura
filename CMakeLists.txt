@@ -23,7 +23,7 @@ target_link_libraries(Sakura PRIVATE
 )
 
 add_executable(sakura
-  main.cpp sakura.cpp
+  example.cpp sakura.cpp
 )
 
 target_include_directories(sakura PRIVATE
