@@ -7,8 +7,6 @@
 #include <unistd.h>
 #include <vector>
 
-using namespace std;
-
 const std::string Sakura::ASCII_CHARS_SIMPLE = " .:-=+*#%@";
 const std::string Sakura::ASCII_CHARS_DETAILED =
     " .'`^\",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$";
@@ -26,14 +24,14 @@ bool Sakura::renderFromUrl(const std::string &url,
                            const RenderOptions &options) {
   auto response = cpr::Get(cpr::Url{url});
   if (response.status_code != 200) {
-    cerr << "Failed to download image. Status: " << response.status_code
-         << endl;
+    std::cerr << "Failed to download image. Status: " << response.status_code
+         << std::endl;
     return false;
   }
-  vector<uchar> imgData(response.text.begin(), response.text.end());
+  std::vector<uchar> imgData(response.text.begin(), response.text.end());
   cv::Mat img = cv::imdecode(imgData, cv::IMREAD_COLOR);
   if (img.empty()) {
-    cerr << "Failed to decode image" << endl;
+    std::cerr << "Failed to decode image" << std::endl;
     return false;
   }
   return renderFromMat(img, options);
@@ -73,8 +71,8 @@ bool Sakura::renderFromMat(const cv::Mat &img, const RenderOptions &options) {
     } else {
       target_width = static_cast<int>(target_height * aspectRatio);
     }
-    target_width = max(target_width, 1);
-    target_height = max(target_height, 1);
+    target_width = std::max(target_width, 1);
+    target_height = std::max(target_height, 1);
   }
 
   cv::Mat resized;
@@ -82,7 +80,7 @@ bool Sakura::renderFromMat(const cv::Mat &img, const RenderOptions &options) {
     cv::resize(adjusted, resized, cv::Size(target_width, target_height * 2), 0,
                0, cv::INTER_AREA);
     if (resized.empty()) {
-      cerr << "Resize failed for exact mode" << endl;
+      std::cerr << "Resize failed for exact mode" << std::endl;
       return false;
     }
     renderExact(resized, target_height);
@@ -90,13 +88,13 @@ bool Sakura::renderFromMat(const cv::Mat &img, const RenderOptions &options) {
     cv::resize(adjusted, resized, cv::Size(target_width, target_height), 0, 0,
                cv::INTER_AREA);
     if (resized.empty()) {
-      cerr << "Resize failed for ASCII mode" << endl;
+      std::cerr << "Resize failed for ASCII mode" << std::endl;
       return false;
     }
     if (options.mode == ASCII_COLOR) {
       renderAsciiColor(resized);
     } else if (options.mode == ASCII_GRAY) {
-      const string &charSet = getCharSet(options.style);
+      const std::string &charSet = getCharSet(options.style);
       renderAsciiGrayscale(resized, charSet, options.dither);
     }
   }
@@ -119,8 +117,8 @@ const std::string &Sakura::getCharSet(CharStyle style) const {
 void Sakura::renderExact(const cv::Mat &resized, int terminal_height) {
   int height = resized.rows / 2;
   int width = resized.cols;
-  for (int k = 0; k < min(height, terminal_height); k++) {
-    string line;
+  for (int k = 0; k < std::min(height, terminal_height); k++) {
+    std::string line;
     for (int j = 0; j < width; j++) {
       cv::Vec3b top_pixel = resized.at<cv::Vec3b>(2 * k, j);
       cv::Vec3b bottom_pixel = (2 * k + 1 < resized.rows)
@@ -147,7 +145,7 @@ void Sakura::renderAsciiColor(const cv::Mat &resized) {
   int height = resized.rows;
   int width = resized.cols;
   for (int i = 0; i < height; i++) {
-    string line;
+    std::string line;
     for (int j = 0; j < width; j++) {
       cv::Vec3b pixel = resized.at<cv::Vec3b>(i, j);
       int r = pixel[2];
@@ -162,7 +160,7 @@ void Sakura::renderAsciiColor(const cv::Mat &resized) {
   fflush(stdout);
 }
 
-void Sakura::renderAsciiGrayscale(const cv::Mat &resized, const string &charSet,
+void Sakura::renderAsciiGrayscale(const cv::Mat &resized, const std::string &charSet,
                                   DitherMode dither) {
   cv::Mat gray;
   cv::cvtColor(resized, gray, cv::COLOR_BGR2GRAY);
@@ -174,12 +172,12 @@ void Sakura::renderAsciiGrayscale(const cv::Mat &resized, const string &charSet,
     gray.convertTo(gray, CV_32F, 1.0 / 255.0);
     cv::Mat error = cv::Mat::zeros(height, width, CV_32F);
     for (int i = 0; i < height; i++) {
-      string line;
+      std::string line;
       for (int j = 0; j < width; j++) {
         float old_value = gray.at<float>(i, j) + error.at<float>(i, j);
-        old_value = max(0.0f, min(1.0f, old_value));
+        old_value = std::max(0.0f, std::min(1.0f, old_value));
         int level = static_cast<int>(round(old_value * (num_chars - 1)));
-        level = max(0, min(num_chars - 1, level));
+        level = std::max(0, std::min(num_chars - 1, level));
         float chosen_value = static_cast<float>(level) / (num_chars - 1);
         float err = old_value - chosen_value;
         if (j + 1 < width) {
@@ -203,7 +201,7 @@ void Sakura::renderAsciiGrayscale(const cv::Mat &resized, const string &charSet,
 
   else {
     for (int i = 0; i < height; i++) {
-      string line;
+      std::string line;
       for (int j = 0; j < width; j++) {
         int intensity = gray.at<uchar>(i, j);
         int idx = (intensity * (num_chars - 1)) / 255;
@@ -218,7 +216,7 @@ void Sakura::renderAsciiGrayscale(const cv::Mat &resized, const string &charSet,
 
 std::vector<std::string>
 Sakura::renderImageToLines(const cv::Mat &img, const RenderOptions &options) {
-  vector<string> lines;
+  std::vector<std::string> lines;
   cv::Mat adjusted = img.clone();
   if (options.contrast != 1.0 || options.brightness != 0.0) {
     adjusted.convertTo(adjusted, -1, options.contrast * 1.2,
@@ -246,8 +244,8 @@ Sakura::renderImageToLines(const cv::Mat &img, const RenderOptions &options) {
     } else {
       target_width = static_cast<int>(target_height * aspectRatio);
     }
-    target_width = max(target_width, 1);
-    target_height = max(target_height, 1);
+    target_width = std::max(target_width, 1);
+    target_height = std::max(target_height, 1);
   }
 
   cv::Mat resized;
@@ -257,7 +255,7 @@ Sakura::renderImageToLines(const cv::Mat &img, const RenderOptions &options) {
     int height = resized.rows / 2;
     int width = resized.cols;
     for (int k = 0; k < height; k++) {
-      string line;
+      std::string line;
       for (int j = 0; j < width; j++) {
         cv::Vec3b top_pixel = resized.at<cv::Vec3b>(2 * k, j);
         cv::Vec3b bottom_pixel = (2 * k + 1 < resized.rows)
@@ -283,7 +281,7 @@ Sakura::renderImageToLines(const cv::Mat &img, const RenderOptions &options) {
     int height = resized.rows;
     int width = resized.cols;
     for (int i = 0; i < height; i++) {
-      string line;
+      std::string line;
       for (int j = 0; j < width; j++) {
         cv::Vec3b pixel = resized.at<cv::Vec3b>(i, j);
         int r = pixel[2];
@@ -298,7 +296,7 @@ Sakura::renderImageToLines(const cv::Mat &img, const RenderOptions &options) {
   } else if (options.mode == ASCII_GRAY) {
     cv::resize(adjusted, resized, cv::Size(target_width, target_height), 0, 0,
                cv::INTER_AREA);
-    const string &charSet = getCharSet(options.style);
+    const std::string &charSet = getCharSet(options.style);
     int num_chars = charSet.size();
     cv::Mat gray;
     cv::cvtColor(resized, gray, cv::COLOR_BGR2GRAY);
@@ -306,12 +304,12 @@ Sakura::renderImageToLines(const cv::Mat &img, const RenderOptions &options) {
       gray.convertTo(gray, CV_32F, 1.0 / 255.0);
       cv::Mat error = cv::Mat::zeros(gray.rows, gray.cols, CV_32F);
       for (int i = 0; i < gray.rows; i++) {
-        string line;
+        std::string line;
         for (int j = 0; j < gray.cols; j++) {
           float old_value = gray.at<float>(i, j) + error.at<float>(i, j);
-          old_value = max(0.0f, min(1.0f, old_value));
+          old_value = std::max(0.0f, std::min(1.0f, old_value));
           int level = static_cast<int>(round(old_value * (num_chars - 1)));
-          level = max(0, min(num_chars - 1, level));
+          level = std::max(0, std::min(num_chars - 1, level));
           float chosen_value = static_cast<float>(level) / (num_chars - 1);
           float err = old_value - chosen_value;
           if (j + 1 < gray.cols) {
@@ -332,7 +330,7 @@ Sakura::renderImageToLines(const cv::Mat &img, const RenderOptions &options) {
       }
     } else {
       for (int i = 0; i < gray.rows; i++) {
-        string line;
+        std::string line;
         for (int j = 0; j < gray.cols; j++) {
           int intensity = gray.at<uchar>(i, j);
           int idx = (intensity * (num_chars - 1)) / 255;
@@ -345,10 +343,10 @@ Sakura::renderImageToLines(const cv::Mat &img, const RenderOptions &options) {
   return lines;
 }
 
-bool Sakura::renderGridFromUrls(const vector<string> &urls, int cols,
+bool Sakura::renderGridFromUrls(const std::vector<std::string> &urls, int cols,
                                 const RenderOptions &options) {
   if (urls.empty() || cols <= 0) {
-    cerr << "Invalid grid parameters" << endl;
+    std::cerr << "Invalid grid parameters" << std::endl;
     return false;
   }
 
@@ -357,17 +355,17 @@ bool Sakura::renderGridFromUrls(const vector<string> &urls, int cols,
   int cell_width = term_width / cols;
   int cell_height = term_height / rows;
 
-  vector<vector<string>> all_lines;
+  std::vector<std::vector<std::string>> all_lines;
   for (const auto &url : urls) {
     auto response = cpr::Get(cpr::Url{url});
     if (response.status_code != 200) {
-      cerr << "Failed to download image: " << url << endl;
+      std::cerr << "Failed to download image: " << url << std::endl;
       continue;
     }
-    vector<uchar> imgData(response.text.begin(), response.text.end());
+    std::vector<uchar> imgData(response.text.begin(), response.text.end());
     cv::Mat img = cv::imdecode(imgData, cv::IMREAD_COLOR);
     if (img.empty()) {
-      cerr << "Failed to decode image: " << url << endl;
+      std::cerr << "Failed to decode image: " << url << std::endl;
       continue;
     }
     RenderOptions cell_options = options;
@@ -378,16 +376,16 @@ bool Sakura::renderGridFromUrls(const vector<string> &urls, int cols,
 
   int max_height = 0;
   for (const auto &lines : all_lines) {
-    max_height = max(max_height, static_cast<int>(lines.size()));
+    max_height = std::max(max_height, static_cast<int>(lines.size()));
   }
 
   for (int i = 0; i < max_height; i++) {
-    string row_line;
+    std::string row_line;
     for (int c = 0; c < cols && c < all_lines.size(); c++) {
       if (i < all_lines[c].size()) {
         row_line += all_lines[c][i];
       } else {
-        row_line += string(cell_width, ' ');
+        row_line += std::string(cell_width, ' ');
       }
     }
     printf("%s\n", row_line.c_str());
@@ -396,11 +394,11 @@ bool Sakura::renderGridFromUrls(const vector<string> &urls, int cols,
   return true;
 }
 
-bool Sakura::renderGifFromUrl(const string &gifUrl,
+bool Sakura::renderGifFromUrl(const std::string &gifUrl,
                               const RenderOptions &options) {
   cv::VideoCapture cap(gifUrl);
   if (!cap.isOpened()) {
-    cerr << "Failed to open GIF" << endl;
+    std::cerr << "Failed to open GIF" << std::endl;
     return false;
   }
 
@@ -411,9 +409,9 @@ bool Sakura::renderGifFromUrl(const string &gifUrl,
     cv::Mat frame;
     if (!cap.read(frame))
       break;
-    cout << "\033[2J\033[1;1H";
+    std::cout << "\033[2J\033[1;1H";
     renderFromMat(frame, options);
-    this_thread::sleep_for(chrono::milliseconds(delay));
+    std::this_thread::sleep_for(std::chrono::milliseconds(delay));
   }
 
   cap.release();
