@@ -1,5 +1,6 @@
 #include "sakura.hpp"
 #include <chrono>
+#include <climits>
 #include <cpr/cpr.h>
 #include <iostream>
 #include <sstream>
@@ -283,12 +284,26 @@ Sakura::renderImageToLines(const cv::Mat &img, const RenderOptions &options) {
 // is an index into the output 'palette'
 cv::Mat Sakura::quantizeImage(const cv::Mat &inputImg, int numColors,
                               cv::Mat &palette) {
+  cv::Mat smallImg;
+  // resizing the img to reduce the number of pixels for k-means
+  const int MAX_QUANT_DIM = 256;
+  double ratio = static_cast<ratio>(inputImg.cols) / inputImg.rows;
+  int w, h;
+  if (ratio > 1) {
+    w = MAX_QUANT_DIM;
+    h = static_cast<int>(w / ratio);
+  } else {
+    h = MAX_QUANT_DIM;
+    w = static_cast<int>(h * ratio);
+  }
+  cv::resize(inputImg, smallImg, cv::Size(w, h), 0, 0, cv::INTER_AREA);
+
   // the image becomes a single column matrix with 3 channels
-  cv::Mat samples(inputImg.rows * inputImg.cols, 3, CV_32F);
-  for (int y = 0; y < inputImg.rows; y++) {
-    for (int x = 0; x < inputImg.cols; x++) {
-      samples.at<cv::Vec3f>(y + x * inputImg.rows, 0) =
-          inputImg.at<cv::Vec3b>(y, x);
+  cv::Mat samples(smallImg.rows * smallImg.cols, 3, CV_32F);
+  for (int y = 0; y < smallImg.rows; y++) {
+    for (int x = 0; x < smallImg.cols; x++) {
+      samples.at<cv::Vec3f>(y + x * smallImg.rows, 0) =
+          smallImg.at<cv::Vec3b>(y, x);
     }
   }
 
@@ -302,8 +317,28 @@ cv::Mat Sakura::quantizeImage(const cv::Mat &inputImg, int numColors,
              3, cv::KMEANS_PP_CENTERS, palette);
   // reshaping the palette and labels
   palette.convertTo(palette, CV_8UC3);
+
+  // map the full-sized original image to new palette
   // labels contains the cluster index for each pixel
-  cv::Mat quantizedImg = labels.reshape(1, inputImg.rows);
+  cv::Mat quantizedImg(inputImg.size(), CV_8U);
+  for (int y = 0; y < inputImg.rows; y++) {
+    for (int x = 0; x < inputImg.cols; x++) {
+      cv::Vec3b pixel = inputImg.at<cv::Vec3b>(y, x);
+      int min_dist_sq = INT_MAX;
+      int best_idx = 0;
+      for (int i = 0; i < palette.rows; i++) {
+        cv::Vec3b palette_color = palette.at<cv::Vec3b>(i);
+        int dist_sq = pow(pixel[0] - palette_color[0], 2) +
+                      pow(pixel[1] - palette_color[1], 2) +
+                      pow(pixel[2] - palette_color[2], 2);
+        if (dist_sq < min_dist_sq) {
+          min_dist_sq = dist_sq;
+          best_idx = i;
+        }
+      }
+      quantizedImg.at<uchar>(y, x) = best_idx;
+    }
+  }
   return quantizedImg;
 }
 
