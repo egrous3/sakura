@@ -144,9 +144,13 @@ std::vector<std::string> Sakura::renderExact(const cv::Mat &resized,
   std::vector<std::string> lines;
   int height = resized.rows / 2;
   int width = resized.cols;
+
+  // buffer size: ~45 chars per pixel + some padding
+  size_t line_buffer = width * 45;
+  std::string line;
+  line.reserve(line_buffer);
   for (int k = 0; k < std::min(height, terminal_height); k++) {
-    std::string line;
-    line.reserve(width * 30);
+    line.clear(); // reusing reserved memory
     for (int j = 0; j < width; j++) {
       cv::Vec3b top_pixel = resized.at<cv::Vec3b>(2 * k, j);
       cv::Vec3b bottom_pixel = (2 * k + 1 < resized.rows)
@@ -162,7 +166,7 @@ std::vector<std::string> Sakura::renderExact(const cv::Mat &resized,
       snprintf(buf, sizeof(buf),
                "\x1b[48;2;%d;%d;%dm\x1b[38;2;%d;%d;%dm▀\x1b[0m", r_bottom,
                g_bottom, b_bottom, r_top, g_top, b_top);
-      line += buf;
+      line.append(buf);
     }
     lines.push_back(line);
   }
@@ -197,7 +201,7 @@ Sakura::renderAsciiGrayscale(const cv::Mat &resized, const std::string &charSet,
   std::vector<std::string> lines;
   cv::Mat gray;
   cv::cvtColor(resized, gray, cv::COLOR_BGR2GRAY);
-  int height = gray.rows;
+  int height = gray.rows / 2;
   int width = gray.cols;
   int num_chars = charSet.size();
 
