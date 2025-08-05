@@ -33,10 +33,13 @@ std::pair<int, int> Sakura::getTerminalSize() {
 bool Sakura::preprocessAndResize(const cv::Mat &img,
                                  const RenderOptions &options, cv::Mat &resized,
                                  int &target_width, int &target_height) {
-  cv::Mat adjusted = img.clone();
+  cv::Mat adjusted;
   if (options.contrast != 1.0 || options.brightness != 0.0) {
+    adjusted = img.clone();
     adjusted.convertTo(adjusted, -1, options.contrast * 1.2,
                        options.brightness);
+  } else {
+    adjusted = img;
   }
 
   target_width = options.width;
@@ -143,6 +146,7 @@ std::vector<std::string> Sakura::renderExact(const cv::Mat &resized,
   int width = resized.cols;
   for (int k = 0; k < std::min(height, terminal_height); k++) {
     std::string line;
+    line.reserve(width * 30);
     for (int j = 0; j < width; j++) {
       cv::Vec3b top_pixel = resized.at<cv::Vec3b>(2 * k, j);
       cv::Vec3b bottom_pixel = (2 * k + 1 < resized.rows)
@@ -171,6 +175,7 @@ std::vector<std::string> Sakura::renderAsciiColor(const cv::Mat &resized) {
   int width = resized.cols;
   for (int i = 0; i < height; i++) {
     std::string line;
+    line.reserve(width * 20);
     for (int j = 0; j < width; j++) {
       cv::Vec3b pixel = resized.at<cv::Vec3b>(i, j);
       int r = pixel[2];
