@@ -1,17 +1,17 @@
 #include "sakura.hpp"
+#include <atomic>
 #include <chrono>
 #include <cpr/cpr.h>
+#include <cstdlib>
+#include <ctime>
+#include <fstream>
+#include <future>
+#include <iomanip>
 #include <iostream>
+#include <sixel.h>
 #include <sstream>
 #include <thread>
 #include <vector>
-#include <sixel.h>
-#include <cstdlib>
-#include <future>
-#include <atomic>
-#include <fstream>
-#include <ctime>
-#include <iomanip>
 
 const std::string Sakura::ASCII_CHARS_SIMPLE = " .:-=+*#%@";
 const std::string Sakura::ASCII_CHARS_DETAILED =
@@ -112,19 +112,20 @@ bool Sakura::renderFromUrl(const std::string &url) {
 bool Sakura::renderFromMat(const cv::Mat &img, const RenderOptions &options) {
   if (options.mode == SIXEL) {
     cv::Mat processed;
-    
+
     if (img.cols != options.width || img.rows != options.height) {
-      cv::resize(img, processed, cv::Size(options.width, options.height), 0, 0, cv::INTER_NEAREST);
+      cv::resize(img, processed, cv::Size(options.width, options.height), 0, 0,
+                 cv::INTER_NEAREST);
     } else {
       processed = img;
     }
-    
+
     std::string sixelData = renderSixel(processed, options.paletteSize);
     printf("%s", sixelData.c_str());
     fflush(stdout);
     return true;
   }
-  
+
   cv::Mat resized;
   int target_width, target_height;
   if (!preprocessAndResize(img, options, resized, target_width,
@@ -369,50 +370,55 @@ cv::Mat Sakura::quantizeImage(const cv::Mat &inputImg, int numColors,
 }
 
 static int string_writer(char *data, int size, void *priv) {
-    auto *sixel_string = static_cast<std::string*>(priv);
-    sixel_string->append(data, size);
-    return size;
+  auto *sixel_string = static_cast<std::string *>(priv);
+  sixel_string->append(data, size);
+  return size;
 }
 
 std::string Sakura::renderSixel(const cv::Mat &img, int paletteSize) {
-    if (img.empty()) {
-        return "";
-    }
+  if (img.empty()) {
+    return "";
+  }
 
-    int optimized_palette = paletteSize;
-    
-    cv::Mat rgb_img;
-    cv::cvtColor(img, rgb_img, cv::COLOR_BGR2RGB);
+  int optimized_palette = paletteSize;
 
-    sixel_output_t *output = nullptr;
-    std::string sixel_output_string;
-    if (sixel_output_new(&output, string_writer, &sixel_output_string, nullptr) != SIXEL_OK) {
-        return "";
-    }
+  cv::Mat rgb_img;
+  cv::cvtColor(img, rgb_img, cv::COLOR_BGR2RGB);
 
-    sixel_dither_t *dither = nullptr;
-    if (sixel_dither_new(&dither, optimized_palette, nullptr) != SIXEL_OK || dither == nullptr) {
-        sixel_output_unref(output);
-        return "";
-    }
+  sixel_output_t *output = nullptr;
+  std::string sixel_output_string;
+  if (sixel_output_new(&output, string_writer, &sixel_output_string, nullptr) !=
+      SIXEL_OK) {
+    return "";
+  }
 
-    if (sixel_dither_initialize(dither, rgb_img.data, rgb_img.cols, rgb_img.rows, SIXEL_PIXELFORMAT_RGB888,
-                               SIXEL_LARGE_NORM, SIXEL_REP_CENTER_BOX, SIXEL_QUALITY_HIGH) != SIXEL_OK) {
-        sixel_dither_unref(dither);
-        sixel_output_unref(output);
-        return "";
-    }
+  sixel_dither_t *dither = nullptr;
+  if (sixel_dither_new(&dither, optimized_palette, nullptr) != SIXEL_OK ||
+      dither == nullptr) {
+    sixel_output_unref(output);
+    return "";
+  }
 
-    if (sixel_encode(rgb_img.data, rgb_img.cols, rgb_img.rows, 3, dither, output) != SIXEL_OK) {
-        sixel_dither_unref(dither);
-        sixel_output_unref(output);
-        return "";
-    }
-
+  if (sixel_dither_initialize(dither, rgb_img.data, rgb_img.cols, rgb_img.rows,
+                              SIXEL_PIXELFORMAT_RGB888, SIXEL_LARGE_NORM,
+                              SIXEL_REP_CENTER_BOX,
+                              SIXEL_QUALITY_HIGH) != SIXEL_OK) {
     sixel_dither_unref(dither);
     sixel_output_unref(output);
+    return "";
+  }
 
-    return sixel_output_string;
+  if (sixel_encode(rgb_img.data, rgb_img.cols, rgb_img.rows, 3, dither,
+                   output) != SIXEL_OK) {
+    sixel_dither_unref(dither);
+    sixel_output_unref(output);
+    return "";
+  }
+
+  sixel_dither_unref(dither);
+  sixel_output_unref(output);
+
+  return sixel_output_string;
 }
 
 bool Sakura::renderGridFromUrls(const std::vector<std::string> &urls, int cols,
@@ -478,15 +484,17 @@ bool Sakura::renderGifFromUrl(const std::string &gifUrl,
   int gif_width = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH));
   int gif_height = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
   double fps = cap.get(cv::CAP_PROP_FPS);
-  if (fps <= 0) fps = 10.0; // Default GIF speed
+  if (fps <= 0)
+    fps = 10.0; // Default GIF speed
 
-  std::cout << "GIF: " << gif_width << "x" << gif_height << ", " << fps << " FPS" << std::endl;
+  std::cout << "GIF: " << gif_width << "x" << gif_height << ", " << fps
+            << " FPS" << std::endl;
 
   double gifAspect = static_cast<double>(gif_width) / gif_height;
   double termAspect = static_cast<double>(options.width) / options.height;
-  
+
   RenderOptions gifOptions = options;
-  
+
   if (gifAspect > termAspect) {
     gifOptions.width = options.width;
     gifOptions.height = static_cast<int>(options.width / gifAspect);
@@ -494,20 +502,21 @@ bool Sakura::renderGifFromUrl(const std::string &gifUrl,
     gifOptions.height = options.height;
     gifOptions.width = static_cast<int>(options.height * gifAspect);
   }
-  
+
   if (fps > 20.0) {
     gifOptions.width = static_cast<int>(gifOptions.width * 0.95);
     gifOptions.height = static_cast<int>(gifOptions.height * 0.95);
   }
-  
-  std::cout << "Scaled to: " << gifOptions.width << "x" << gifOptions.height << std::endl;
+
+  std::cout << "Scaled to: " << gifOptions.width << "x" << gifOptions.height
+            << std::endl;
 
   auto frame_duration_ns = static_cast<long long>(1000000000.0 / fps);
   auto start_time = std::chrono::high_resolution_clock::now();
-  
+
   int frame_number = 0;
   int frames_dropped = 0;
-  
+
   setvbuf(stdout, nullptr, _IONBF, 0);
   std::cout << "\033[2J\033[?25l" << std::flush;
 
@@ -516,12 +525,14 @@ bool Sakura::renderGifFromUrl(const std::string &gifUrl,
 
   while (true) {
     auto frame_start = std::chrono::high_resolution_clock::now();
-    auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(frame_start - start_time).count();
-    
+    auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                          frame_start - start_time)
+                          .count();
+
     long long target_frame = elapsed_ns / frame_duration_ns;
-    
+
     if (frame_number < target_frame) {
-      int frames_behind = target_frame - frame_number;  
+      int frames_behind = target_frame - frame_number;
       if (frames_behind > 2 && frames_dropped < frame_number * 0.3) {
         if (!cap.read(frame)) {
           goto end_gif_playback;
@@ -531,28 +542,30 @@ bool Sakura::renderGifFromUrl(const std::string &gifUrl,
         continue;
       }
     }
-    
+
     if (!cap.read(frame))
       break;
-      
+
     cv::resize(frame, resized_frame, target_size, 0, 0, cv::INTER_NEAREST);
-    
+
     std::string sixel_data = renderSixel(resized_frame, gifOptions.paletteSize);
     std::cout << "\033[H" << sixel_data;
-    
+
     frame_number++;
-    
+
     if (frame_number % 20 == 0) {
       std::cout << "\nGIF: " << frame_number << " D:" << frames_dropped;
     }
-    
-    auto next_frame_time_ns = start_time + std::chrono::nanoseconds(frame_number * frame_duration_ns);
+
+    auto next_frame_time_ns =
+        start_time + std::chrono::nanoseconds(frame_number * frame_duration_ns);
     auto now = std::chrono::high_resolution_clock::now();
-    
+
     if (next_frame_time_ns > now) {
       auto sleep_duration = next_frame_time_ns - now;
       if (sleep_duration > std::chrono::milliseconds(2)) {
-        std::this_thread::sleep_for(sleep_duration - std::chrono::milliseconds(1));
+        std::this_thread::sleep_for(sleep_duration -
+                                    std::chrono::milliseconds(1));
         while (std::chrono::high_resolution_clock::now() < next_frame_time_ns) {
           std::this_thread::yield();
         }
@@ -563,18 +576,18 @@ bool Sakura::renderGifFromUrl(const std::string &gifUrl,
       }
     }
   }
-  
-  end_gif_playback:
-  
+
+end_gif_playback:
+
   std::cout << "\033[?25h" << std::flush;
   setvbuf(stdout, nullptr, _IOLBF, 0);
-  
+
   cap.release();
-  
-  std::cout << "\nOptimized GIF completed. Frames: " << frame_number 
-            << ", Dropped: " << frames_dropped 
-            << " (" << std::fixed << std::setprecision(1) 
-            << (frames_dropped * 100.0 / frame_number) << "%)" << std::endl;
+
+  std::cout << "\nOptimized GIF completed. Frames: " << frame_number
+            << ", Dropped: " << frames_dropped << " (" << std::fixed
+            << std::setprecision(1) << (frames_dropped * 100.0 / frame_number)
+            << "%)" << std::endl;
   return true;
 }
 
@@ -582,17 +595,19 @@ bool Sakura::renderVideoFromUrl(const std::string &videoUrl,
                                 const RenderOptions &options) {
   auto response = cpr::Get(cpr::Url{videoUrl});
   if (response.status_code != 200) {
-    std::cerr << "Failed to download video. Status: " << response.status_code << std::endl;
+    std::cerr << "Failed to download video. Status: " << response.status_code
+              << std::endl;
     return false;
   }
-  
-  std::string tempFile = "/tmp/sakura_video_" + std::to_string(std::time(nullptr));
+
+  std::string tempFile =
+      "/tmp/sakura_video_" + std::to_string(std::time(nullptr));
   std::ofstream file(tempFile, std::ios::binary);
   file.write(response.text.data(), response.text.size());
   file.close();
-  
+
   bool result = renderVideoFromFile(tempFile, options);
-  
+
   std::remove(tempFile.c_str());
   return result;
 }
@@ -611,111 +626,124 @@ bool Sakura::renderVideoFromFile(const std::string &videoPath,
   int video_width = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH));
   int video_height = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
   double duration = frame_count / fps;
-  
-  if (fps <= 0) fps = 30.0; // Default fallback
-  
-  std::cout << "Video: " << video_width << "x" << video_height << ", " 
-            << frame_count << " frames, " << fps << " FPS, " 
-            << duration << "s duration" << std::endl;
+
+  if (fps <= 0)
+    fps = 30.0; // Default fallback
+
+  std::cout << "Video: " << video_width << "x" << video_height << ", "
+            << frame_count << " frames, " << fps << " FPS, " << duration
+            << "s duration" << std::endl;
 
   RenderOptions videoOptions = options;
-  
+
   double scale_factor = 0.95;
-  if (fps > 30.0) scale_factor = 0.90;
-  if (fps > 50.0) scale_factor = 0.85;
-  
+  if (fps > 30.0)
+    scale_factor = 0.90;
+  if (fps > 50.0)
+    scale_factor = 0.85;
+
   videoOptions.width = static_cast<int>(options.width * scale_factor);
   videoOptions.height = static_cast<int>(options.height * scale_factor);
-  
+
   double videoAspect = static_cast<double>(video_width) / video_height;
   if (videoAspect > 1.0) {
     videoOptions.height = static_cast<int>(videoOptions.width / videoAspect);
   } else {
     videoOptions.width = static_cast<int>(videoOptions.height * videoAspect);
   }
-  
-  std::cout << "Scaled to: " << videoOptions.width << "x" << videoOptions.height << std::endl;
+
+  std::cout << "Scaled to: " << videoOptions.width << "x" << videoOptions.height
+            << std::endl;
 
   cv::Mat frame, resized_frame;
   cv::Size target_size(videoOptions.width, videoOptions.height);
-  
+
   auto frame_duration_ns = static_cast<long long>(1000000000.0 / fps);
   auto start_time = std::chrono::high_resolution_clock::now();
-  
+
   int frame_number = 0;
   int frames_dropped = 0;
   int frames_rendered = 0;
-  
+
   setvbuf(stdout, nullptr, _IONBF, 0);
   std::cout << "\033[2J\033[?25l" << std::flush;
-  
+
   std::atomic<bool> audio_started{false};
   std::future<void> audio_future = std::async(std::launch::async, [&]() {
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     audio_started = true;
-    std::string audio_cmd = "ffplay -nodisp -autoexit \"" + videoPath + "\" 2>/dev/null";
+    std::string audio_cmd =
+        "ffplay -nodisp -autoexit \"" + videoPath + "\" 2>/dev/null";
     std::system(audio_cmd.c_str());
   });
-  
+
   std::string sixel_data;
   sixel_data.reserve(1024 * 1024);
-  
+
   while (true) {
     auto frame_start = std::chrono::high_resolution_clock::now();
-    auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(frame_start - start_time).count();
-    
+    auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                          frame_start - start_time)
+                          .count();
+
     long long target_frame_number = elapsed_ns / frame_duration_ns;
-    
+
     if (frame_number < target_frame_number) {
       int frames_behind = target_frame_number - frame_number;
-      
+
       if (frames_behind > 2) {
         while (frame_number < target_frame_number - 1) {
-          if (!cap.read(frame)) goto end_playback;
+          if (!cap.read(frame))
+            goto end_playback;
           frame_number++;
           frames_dropped++;
         }
       }
     }
-    
-    if (!cap.read(frame)) break;
+
+    if (!cap.read(frame))
+      break;
     frame_number++;
-    
+
     cv::resize(frame, resized_frame, target_size, 0, 0, cv::INTER_NEAREST);
-    
+
     sixel_data = renderSixel(resized_frame, videoOptions.paletteSize);
-    
+
     std::cout << "\033[H" << sixel_data;
     frames_rendered++;
-    
+
     if (frame_number % (static_cast<int>(fps) * 3) == 0) {
-      std::cout << "\nFrame: " << frame_number << "/" << frame_count 
-                << " Dropped: " << frames_dropped << " Audio: " << (audio_started ? "ON" : "OFF");
+      std::cout << "\nFrame: " << frame_number << "/" << frame_count
+                << " Dropped: " << frames_dropped
+                << " Audio: " << (audio_started ? "ON" : "OFF");
     }
-    
-    auto next_frame_time = start_time + std::chrono::nanoseconds(frame_number * frame_duration_ns);
+
+    auto next_frame_time =
+        start_time + std::chrono::nanoseconds(frame_number * frame_duration_ns);
     auto now = std::chrono::high_resolution_clock::now();
-    
+
     if (next_frame_time > now) {
       auto sleep_duration = next_frame_time - now;
-      
+
       if (sleep_duration > std::chrono::milliseconds(1)) {
         std::this_thread::sleep_for(sleep_duration);
       }
     }
   }
-  
-  end_playback:
-  
+
+end_playback:
+
   std::cout << "\033[?25h" << std::flush;
   setvbuf(stdout, nullptr, _IOLBF, 0);
   cap.release();
   std::system("pkill -f ffplay 2>/dev/null");
-  
+
   double drop_rate = (frames_dropped * 100.0) / frame_number;
   double render_rate = (frames_rendered * 100.0) / frame_number;
-  std::cout << "\nPlayback completed. Total: " << frame_number 
-            << ", Rendered: " << frames_rendered << " (" << std::fixed << std::setprecision(1) << render_rate << "%)"
-            << ", Dropped: " << frames_dropped << " (" << drop_rate << "%)" << std::endl;
+  std::cout << "\nPlayback completed. Total: " << frame_number
+            << ", Rendered: " << frames_rendered << " (" << std::fixed
+            << std::setprecision(1) << render_rate << "%)"
+            << ", Dropped: " << frames_dropped << " (" << drop_rate << "%)"
+            << std::endl;
   return true;
 }

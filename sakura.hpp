@@ -32,9 +32,9 @@ public:
   bool renderGifFromUrl(const std::string &gifUrl,
                         const RenderOptions &options);
   bool renderVideoFromUrl(const std::string &videoUrl,
-                         const RenderOptions &options);
-  bool renderVideoFromFile(const std::string &videoPath,
                           const RenderOptions &options);
+  bool renderVideoFromFile(const std::string &videoPath,
+                           const RenderOptions &options);
   std::vector<std::string> renderImageToLines(const cv::Mat &img,
                                               const RenderOptions &options);
 
