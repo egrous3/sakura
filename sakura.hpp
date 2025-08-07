@@ -14,13 +14,14 @@ public:
   struct RenderOptions {
     int width = 0;
     int height = 0;
+    int paletteSize = 256; // For SIXEL: number of colors in palette
     CharStyle style = SIMPLE;
     RenderMode mode = EXACT;
     DitherMode dither = NONE;
     bool aspectRatio = true;
     double contrast = 1.2;
     double brightness = 0.0;
-    double terminalAspectRatio = 2.0;
+    double terminalAspectRatio = 1.0;
   };
 
   bool renderFromUrl(const std::string &url, const RenderOptions &options);
@@ -30,6 +31,10 @@ public:
                           const RenderOptions &options);
   bool renderGifFromUrl(const std::string &gifUrl,
                         const RenderOptions &options);
+  bool renderVideoFromUrl(const std::string &videoUrl,
+                         const RenderOptions &options);
+  bool renderVideoFromFile(const std::string &videoPath,
+                          const RenderOptions &options);
   std::vector<std::string> renderImageToLines(const cv::Mat &img,
                                               const RenderOptions &options);
 
@@ -46,7 +51,7 @@ private:
   std::vector<std::string> renderAsciiGrayscale(const cv::Mat &resized,
                                                 const std::string &charSet,
                                                 DitherMode dither);
-  std::string renderSixel(const cv::Mat &img, int paletteSize = 256);
+  std::string renderSixel(const cv::Mat &img, int paletteSize = 16);
   cv::Mat quantizeImage(const cv::Mat &inputImg, int numColors,
                         cv::Mat &palette);
   bool preprocessAndResize(const cv::Mat &img, const RenderOptions &options,
