@@ -438,14 +438,6 @@ sudo apt install clang-format cppcheck valgrind
 cmake -DCMAKE_BUILD_TYPE=Debug ..
 make -j$(nproc)
 ```
-
-### Code Standards
-
-- **C++17** standard compliance
-- **Google C++ Style Guide** formatting
-- **Memory safety** with RAII patterns
-- **Performance-first** design principles
-
 ### Testing
 
 ```bash
