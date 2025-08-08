@@ -1,5 +1,5 @@
 {
-  description = "Sakura";
+  description = "Sakura - A high-performance minimal terminal-based multimedia library";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
