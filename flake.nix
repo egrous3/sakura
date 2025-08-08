@@ -55,6 +55,53 @@
               ];
             };
           }
-        ) pkgsFor;
+        )
+        pkgsFor;
+      nixosModules.default = { config, lib, pkgs, ... }:
+        with lib; {
+          options.programs.sakura = {
+            enable = mkEnableOption "sakura";
+          };
+
+          config = mkIf config.programs.sakura.enable {
+            environment.systemPackages = [
+              self.packages.${pkgs.system}.sakura
+            ];
+          };
+        };
+
+      darwinModules.default = { config, lib, pkgs, ... }:
+        with lib; {
+          options.programs.sakura = {
+            enable = mkEnableOption "sakura";
+          };
+
+          config = mkIf config.programs.sakura.enable {
+            environment.systemPackages = [
+              self.packages.${pkgs.system}.sakura
+            ];
+          };
+        };
+
+      homeModules.default = { config, lib, pkgs, ... }:
+        with lib; {
+          options.programs.sakura = {
+            enable = mkEnableOption "sakura";
+
+            package = mkOption {
+              type = types.package;
+              default = self.packages.${pkgs.system}.sakura;
+              description = "The sakura package to use";
+            };
+          };
+
+          config = mkIf config.programs.sakura.enable {
+            home.packages = [ config.programs.sakura.package ];
+          };
+        };
+
+      nixosModules.sakura = self.nixosModules.default;
+      darwinModules.sakura = self.darwinModules.default;
+      homeModules.sakura = self.homeModules.default;
     };
 }
