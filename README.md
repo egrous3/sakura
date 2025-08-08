@@ -37,7 +37,7 @@ A high-performance minimal (~1k lines of code) terminal-based multimedia library
 ```bash
 # Ubuntu/Debian
 sudo apt update
-sudo apt install libopencv-dev libsixel-dev libcpr-dev ffmpeg cmake build-essential
+sudo apt install libopencv-dev libsixel-dev ffmpeg cmake build-essential
 
 # Arch Linux
 sudo pacman -S opencv sixel cpr ffmpeg cmake base-devel
@@ -45,6 +45,21 @@ sudo pacman -S opencv sixel cpr ffmpeg cmake base-devel
 # macOS (Homebrew)
 brew install opencv libsixel cpr ffmpeg cmake
 ```
+
+> [!NOTE]
+> For Ubuntu/Debian users: `cpr` is not available as a package in Ubuntu/Debian repositories.  
+You must clone and build it manually.
+
+```bash
+git clone https://github.com/libcpr/cpr.git
+cd cpr
+mkdir build && cd build
+cmake ..
+make
+sudo make install
+```
+
+Alternatively, clone `cpr` into your project root and include it as a subdirectory in your `CMakeLists.txt`
 
 ### Build Instructions
 
