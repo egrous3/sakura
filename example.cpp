@@ -128,6 +128,7 @@ int main(int argc, char **argv) {
       {"image",       required_argument, 0, 'i'},
       {"gif",         required_argument, 0, 'g'},
       {"video",       required_argument, 0, 'v'},
+      {"local-video", required_argument, 0, 'l'},
       {0, 0, 0, 0}
   };
   
