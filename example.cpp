@@ -86,12 +86,30 @@ bool process_gif(std::string url) {
   return sakura.renderGifFromUrl(url, options);
 }
 
+bool process_video(std::string url) {
+  Sakura sakura;
+  bool stat = false;
+  auto [termPixW, termPixH] = getTerminalPixelSize();
+
+  // For video, we'll let the sakura library handle sizing internally
+  // but still set reasonable defaults
+  Sakura::RenderOptions options;
+  options.mode = Sakura::SIXEL;
+  options.dither = Sakura::FLOYD_STEINBERG;
+  options.terminalAspectRatio = 1.0;
+  options.width = termPixW;
+  options.height = termPixH;
+
+  return sakura.renderVideoFromUrl(url, options);
+}
+
 int main(int argc, char **argv) {
   // Parse command line arguments
   static struct option long_options[] = {
       {"help",        no_argument,       0, 'h'},
       {"image",       required_argument, 0, 'i'},
       {"gif",         required_argument, 0, 'g'},
+      {"video",       required_argument, 0, 'v'},
       {0, 0, 0, 0}
   };
   
@@ -104,11 +122,12 @@ int main(int argc, char **argv) {
   while ((opt = getopt_long(argc, argv, "hv:i:g:", long_options, &option_index)) != -1) {
 		switch (opt) {
 			case 'h':
-				std::cout << "Usage: program [options]\n"
+				std::cout << "Usage: sakura [options]\n"
                   << "Options:\n"
-                  << "  -h, --help         Show help message\n"
-                  << "  -i, --image <path> Process image file\n"
-                  << "  -g, --gif <path>   Process GIF file\n"
+                  << "  -h, --help           Show help message\n"
+                  << "  -i, --image <path>   Process image file\n"
+                  << "  -g, --gif <path>     Process GIF file\n"
+                  << "  -v, --video <path>   Process video file\n"
         ;
 				return 0;
         				
@@ -119,6 +138,10 @@ int main(int argc, char **argv) {
       case 'g':
         process_gif( optarg );
         break;
+      
+      case 'v':
+				process_video( optarg );
+				break;
 				
 			case '?':
 				// getopt_long automatically prints error message
@@ -175,14 +198,7 @@ int main(int argc, char **argv) {
     std::cout << "Enter video URL: ";
     std::cin >> videoUrl;
     std::cout << "Rendering video from URL (with audio)...\n";
-    Sakura::RenderOptions options;
-    options.mode = Sakura::SIXEL;
-    options.dither = Sakura::FLOYD_STEINBERG;
-    options.terminalAspectRatio = 1.0;
-    options.width = termPixW;
-    options.height = termPixH;
-
-    stat = sakura.renderVideoFromUrl(videoUrl, options);
+    stat = process_video(videoUrl);
     break;
   }
   case 4: {
