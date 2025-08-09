@@ -362,13 +362,12 @@ for (const auto& url : urls) {
     renderer.renderFromUrl(url, options);
     std::this_thread::sleep_for(std::chrono::seconds(2));
 }
+```
 
 ## TODO
 
 - [ ] Reduce frame drops to <=5%
-- [ ] Use `youtube-dl` to render yt videos without downloading
 - [ ] Create error exception classes
-```
 
 ## Troubleshooting
 
