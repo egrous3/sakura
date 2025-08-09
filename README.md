@@ -32,7 +32,7 @@ A high-performance minimal (~1k lines of code) terminal-based multimedia library
 
 ## Installation
 
-### Dependencies
+### Build From Source
 
 ```bash
 # Ubuntu/Debian
@@ -61,7 +61,7 @@ sudo make install
 
 Alternatively, clone `cpr` into your project root and include it as a subdirectory in your `CMakeLists.txt`
 
-### Build Instructions
+#### Build Instructions
 
 ```bash
 git clone https://github.com/Sarthak2143/sakura.git
@@ -71,10 +71,86 @@ cmake ..
 make -j$(nproc)
 ```
 
-### Quick Start
+#### Quick Start
 
 ```bash
 ./sakura
+```
+
+### NixOS
+
+#### Flakes (recommended)
+install module via flakes
+```nix
+{
+  inputs.sakura.url = "github:sarthak2143/sakura";
+  inputs.sakura.inputs.nixpkgs.follows = "nixpkgs";
+
+  outputs = { self, nixpkgs, sakura }: {
+    # change `yourhostname` to your actual hostname
+    nixosConfigurations.yourhostname = nixpkgs.lib.nixosSystem {
+      # customize to your system
+      system = "x86_64-linux";
+      modules = [
+        ./configuration.nix
+        sakura.nixosModules.sakura
+      ];
+    };
+  };
+}
+
+# enable it in your configuration
+programs.sakura.enable = true;
+```
+
+#### Home Manager 
+install home-manager modules via flakes
+```nix
+{
+  inputs.sakura.url = "github:sarthak2143/sakura";
+  inputs.sakura.inputs.nixpkgs.follows = "nixpkgs";
+
+  outputs = { self, nixpkgs, home-manager, sakura }: {
+    homeConfigurations."username" = home-manager.lib.homeManagerConfiguration {
+      # ...
+      modules = [
+        sakura.homeModules.sakura
+        # ...
+      ];
+    };
+  };
+}
+
+# enable it in home manager config
+programs.sakura.enable = true;
+```
+
+#### Install CLI via flakes
+you can run sakura ad-hoc without installing it.
+```bash
+nix run github:sarthak2143/sakura
+```
+
+you can also install it into NixOS modules
+```nix
+{
+  inputs.sakura.url = "github:sarthak2143/sakura";
+  inputs.sakura.inputs.nixpkgs.follows = "nixpkgs";
+
+  outputs = { self, nixpkgs, sakura }: {
+    # change `yourhostname` to your actual hostname
+    nixosConfigurations.yourhostname = nixpkgs.lib.nixosSystem {
+      # customize to your system
+      system = "x86_64-linux";
+      modules = [
+        ./configuration.nix
+        {
+          environment.systemPackages = [ sakura.packages.${system}.default ];
+        }
+      ];
+    };
+  };
+}
 ```
 
 ## Usage

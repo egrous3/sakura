@@ -66,3 +66,7 @@ target_link_libraries(sakura PRIVATE
   SIXEL::sixel
   Threads::Threads
 )
+
+install(TARGETS sakura
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
