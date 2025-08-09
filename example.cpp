@@ -69,11 +69,29 @@ bool process_image(std::string url) {
   return sakura.renderFromMat(img, options);
 }
 
+bool process_gif(std::string url) {
+  Sakura sakura;
+  bool stat = false;
+  auto [termPixW, termPixH] = getTerminalPixelSize();
+
+  // For GIF, we'll let the sakura library handle sizing internally
+  // but still set reasonable defaults
+  Sakura::RenderOptions options;
+  options.mode = Sakura::SIXEL;
+  options.dither = Sakura::FLOYD_STEINBERG;
+  options.terminalAspectRatio = 1.0;
+  options.width = termPixW;
+  options.height = termPixH;
+
+  return sakura.renderGifFromUrl(url, options);
+}
+
 int main(int argc, char **argv) {
   // Parse command line arguments
   static struct option long_options[] = {
       {"help",        no_argument,       0, 'h'},
       {"image",       required_argument, 0, 'i'},
+      {"gif",         required_argument, 0, 'g'},
       {0, 0, 0, 0}
   };
   
@@ -83,17 +101,23 @@ int main(int argc, char **argv) {
   int opt;
   int option_index = 0;
 
-  while ((opt = getopt_long(argc, argv, "hv:i:", long_options, &option_index)) != -1) {
+  while ((opt = getopt_long(argc, argv, "hv:i:g:", long_options, &option_index)) != -1) {
 		switch (opt) {
 			case 'h':
 				std::cout << "Usage: program [options]\n"
                   << "Options:\n"
                   << "  -h, --help         Show help message\n"
-                  << "  -i, --image <path> Process image file\n";
+                  << "  -i, --image <path> Process image file\n"
+                  << "  -g, --gif <path>   Process GIF file\n"
+        ;
 				return 0;
         				
       case 'i':
         process_image( optarg );
+        break;
+      
+      case 'g':
+        process_gif( optarg );
         break;
 				
 			case '?':
@@ -144,16 +168,7 @@ int main(int argc, char **argv) {
     std::cout << "Enter GIF URL: ";
     std::cin >> gifUrl;
     std::cout << "Rendering GIF...\n";
-    // For GIF, we'll let the sakura library handle sizing internally
-    // but still set reasonable defaults
-    Sakura::RenderOptions options;
-    options.mode = Sakura::SIXEL;
-    options.dither = Sakura::FLOYD_STEINBERG;
-    options.terminalAspectRatio = 1.0;
-    options.width = termPixW;
-    options.height = termPixH;
-
-    stat = sakura.renderGifFromUrl(gifUrl, options);
+    stat = process_gif(gifUrl);
     break;
   }
   case 3: {
