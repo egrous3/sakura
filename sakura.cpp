@@ -10,8 +10,11 @@
 #include <iostream>
 #include <sixel.h>
 #include <sstream>
+#include <string_view>
 #include <thread>
 #include <vector>
+#include <memory>
+#include <algorithm>
 
 const std::string Sakura::ASCII_CHARS_SIMPLE = " .:-=+*#%@";
 const std::string Sakura::ASCII_CHARS_DETAILED =
@@ -40,12 +43,10 @@ std::pair<int, int> Sakura::getTerminalSize() {
 
 bool Sakura::preprocessAndResize(const cv::Mat &img,
                                  const RenderOptions &options, cv::Mat &resized,
-                                 int &target_width, int &target_height) {
+                                 int &target_width, int &target_height) const {
   cv::Mat adjusted;
   if (options.contrast != 1.0 || options.brightness != 0.0) {
-    adjusted = img.clone();
-    adjusted.convertTo(adjusted, -1, options.contrast * 1.2,
-                       options.brightness);
+    img.convertTo(adjusted, -1, options.contrast * 1.2, options.brightness);
   } else {
     adjusted = img;
   }
@@ -54,19 +55,17 @@ bool Sakura::preprocessAndResize(const cv::Mat &img,
   target_height = options.height;
 
   if (target_width == 0 || target_height == 0) {
-    auto [w, h] = getTerminalSize();
-    if (target_width == 0)
-      target_width = w;
-    if (target_height == 0)
-      target_height = h;
+    const auto [w, h] = getTerminalSize();
+    if (target_width == 0) target_width = w;
+    if (target_height == 0) target_height = h;
   }
 
   if (options.aspectRatio) {
     double aspectRatio = static_cast<double>(adjusted.cols) / adjusted.rows;
-    if (options.mode == EXACT || options.mode == ASCII_COLOR ||
-        options.mode == SIXEL) {
+    if (options.mode == EXACT || options.mode == ASCII_COLOR || options.mode == SIXEL) {
       aspectRatio /= options.terminalAspectRatio;
     }
+    
     if (aspectRatio > static_cast<double>(target_width) / target_height) {
       target_height = static_cast<int>(target_width / aspectRatio);
     } else {
@@ -76,26 +75,23 @@ bool Sakura::preprocessAndResize(const cv::Mat &img,
     target_height = std::max(target_height, 1);
   }
 
-  if (options.mode == EXACT) {
-    cv::resize(adjusted, resized, cv::Size(target_width, target_height * 2), 0,
-               0, cv::INTER_AREA);
-  } else {
-    cv::resize(adjusted, resized, cv::Size(target_width, target_height), 0, 0,
-               cv::INTER_AREA);
-  }
+  const cv::Size targetSize = (options.mode == EXACT) 
+    ? cv::Size(target_width, target_height * 2)
+    : cv::Size(target_width, target_height);
+    
+  cv::resize(adjusted, resized, targetSize, 0, 0, cv::INTER_AREA);
   return !resized.empty();
 }
 
-bool Sakura::renderFromUrl(const std::string &url,
-                           const RenderOptions &options) {
-  auto response = cpr::Get(cpr::Url{url});
+bool Sakura::renderFromUrl(std::string_view url, const RenderOptions &options) const {
+  const auto response = cpr::Get(cpr::Url{std::string(url)});
   if (response.status_code != 200) {
-    std::cerr << "Failed to download image. Status: " << response.status_code
-              << std::endl;
+    std::cerr << "Failed to download image. Status: " << response.status_code << std::endl;
     return false;
   }
-  std::vector<uchar> imgData(response.text.begin(), response.text.end());
-  cv::Mat img = cv::imdecode(imgData, cv::IMREAD_COLOR);
+  
+  const std::vector<uchar> imgData(response.text.begin(), response.text.end());
+  const cv::Mat img = cv::imdecode(imgData, cv::IMREAD_COLOR);
   if (img.empty()) {
     std::cerr << "Failed to decode image" << std::endl;
     return false;
@@ -103,129 +99,129 @@ bool Sakura::renderFromUrl(const std::string &url,
   return renderFromMat(img, options);
 }
 
-bool Sakura::renderFromUrl(const std::string &url) {
+bool Sakura::renderFromUrl(std::string_view url) const {
   RenderOptions options;
   options.mode = EXACT;
   return renderFromUrl(url, options);
 }
 
-bool Sakura::renderFromMat(const cv::Mat &img, const RenderOptions &options) {
+bool Sakura::renderFromMat(const cv::Mat &img, const RenderOptions &options) const {
   if (options.mode == SIXEL) {
     cv::Mat processed;
-
     if (img.cols != options.width || img.rows != options.height) {
-      cv::resize(img, processed, cv::Size(options.width, options.height), 0, 0,
-                 cv::INTER_NEAREST);
+      cv::resize(img, processed, cv::Size(options.width, options.height), 0, 0, cv::INTER_NEAREST);
     } else {
       processed = img;
     }
 
-    std::string sixelData = renderSixel(processed, options.paletteSize);
-    printf("%s", sixelData.c_str());
-    fflush(stdout);
+    const std::string sixelData = renderSixel(processed, options.paletteSize);
+    std::cout << sixelData << std::flush;
     return true;
   }
 
   cv::Mat resized;
   int target_width, target_height;
-  if (!preprocessAndResize(img, options, resized, target_width,
-                           target_height)) {
+  if (!preprocessAndResize(img, options, resized, target_width, target_height)) {
     std::cerr << "Resize failed" << std::endl;
     return false;
   }
 
-  if (options.mode == EXACT || options.mode == ASCII_COLOR) {
-    if (resized.channels() == 1) {
-      cv::cvtColor(resized, resized, cv::COLOR_GRAY2BGR);
-    }
+  if ((options.mode == EXACT || options.mode == ASCII_COLOR) && resized.channels() == 1) {
+    cv::cvtColor(resized, resized, cv::COLOR_GRAY2BGR);
   }
 
   std::vector<std::string> lines;
-  if (options.mode == EXACT) {
-    lines = renderExact(resized, target_height);
-  } else if (options.mode == ASCII_COLOR) {
-    lines = renderAsciiColor(resized);
-  } else if (options.mode == ASCII_GRAY) {
-    const std::string &charSet = getCharSet(options.style);
-    lines = renderAsciiGrayscale(resized, charSet, options.dither);
+  switch (options.mode) {
+    case EXACT:
+      lines = renderExact(resized, target_height);
+      break;
+    case ASCII_COLOR:
+      lines = renderAsciiColor(resized);
+      break;
+    case ASCII_GRAY: {
+      const std::string &charSet = getCharSet(options.style);
+      lines = renderAsciiGrayscale(resized, charSet, options.dither);
+      break;
+    }
+    default:
+      return false;
   }
 
   for (const auto &line : lines) {
-    printf("%s\n", line.c_str());
+    std::cout << line << '\n';
   }
-  fflush(stdout);
+  std::cout.flush();
   return true;
 }
 
-const std::string &Sakura::getCharSet(CharStyle style) const {
+const std::string &Sakura::getCharSet(CharStyle style) const noexcept {
   switch (style) {
-  case SIMPLE:
-    return ASCII_CHARS_SIMPLE;
-  case DETAILED:
-    return ASCII_CHARS_DETAILED;
-  case BLOCKS:
-    return ASCII_CHARS_BLOCKS;
-  default:
-    return ASCII_CHARS_DETAILED;
+    case SIMPLE: return ASCII_CHARS_SIMPLE;
+    case DETAILED: return ASCII_CHARS_DETAILED;
+    case BLOCKS: return ASCII_CHARS_BLOCKS;
+    default: return ASCII_CHARS_DETAILED;
   }
 }
 
-std::vector<std::string> Sakura::renderExact(const cv::Mat &resized,
-                                             int terminal_height) const {
+std::vector<std::string> Sakura::renderExact(const cv::Mat &resized, int terminal_height) const {
   std::vector<std::string> lines;
-  int height = resized.rows / 2;
-  int width = resized.cols;
+  const int height = resized.rows / 2;
+  const int width = resized.cols;
+  const int max_lines = std::min(height, terminal_height);
+  
+  lines.reserve(max_lines);
 
-  std::string line;
-  for (int k = 0; k < std::min(height, terminal_height); k++) {
-    line.clear();
-    for (int j = 0; j < width; j++) {
-      cv::Vec3b top_pixel = resized.at<cv::Vec3b>(2 * k, j);
-      cv::Vec3b bottom_pixel = (2 * k + 1 < resized.rows)
-                                   ? resized.at<cv::Vec3b>(2 * k + 1, j)
-                                   : top_pixel;
-      int r_top = top_pixel[2];
-      int g_top = top_pixel[1];
-      int b_top = top_pixel[0];
-      int r_bottom = bottom_pixel[2];
-      int g_bottom = bottom_pixel[1];
-      int b_bottom = bottom_pixel[0];
-      char buf[50];
-      snprintf(buf, sizeof(buf),
-               "\x1b[48;2;%d;%d;%dm\x1b[38;2;%d;%d;%dm▀\x1b[0m", r_bottom,
-               g_bottom, b_bottom, r_top, g_top, b_top);
-      line.append(buf);
+  for (int k = 0; k < max_lines; ++k) {
+    std::string line;
+    line.reserve(width * 30); // Pre-allocate for ANSI sequences
+    
+    for (int j = 0; j < width; ++j) {
+      const cv::Vec3b top_pixel = resized.at<cv::Vec3b>(2 * k, j);
+      const cv::Vec3b bottom_pixel = (2 * k + 1 < resized.rows)
+                                       ? resized.at<cv::Vec3b>(2 * k + 1, j)
+                                       : top_pixel;
+      
+      // Use string stream for better performance with repeated formatting
+      std::ostringstream oss;
+      oss << "\x1b[48;2;" << static_cast<int>(bottom_pixel[2]) << ';'
+          << static_cast<int>(bottom_pixel[1]) << ';' << static_cast<int>(bottom_pixel[0])
+          << "m\x1b[38;2;" << static_cast<int>(top_pixel[2]) << ';'
+          << static_cast<int>(top_pixel[1]) << ';' << static_cast<int>(top_pixel[0])
+          << "m▀\x1b[0m";
+      line += oss.str();
     }
-    lines.push_back(line);
+    lines.emplace_back(std::move(line));
   }
   return lines;
 }
 
-std::vector<std::string>
-Sakura::renderAsciiColor(const cv::Mat &resized) const {
+std::vector<std::string> Sakura::renderAsciiColor(const cv::Mat &resized) const {
   std::vector<std::string> lines;
-  int height = resized.rows;
-  int width = resized.cols;
-  for (int i = 0; i < height; i++) {
+  const int height = resized.rows;
+  const int width = resized.cols;
+  
+  lines.reserve(height);
+
+  for (int i = 0; i < height; ++i) {
     std::string line;
     line.reserve(width * 20);
-    for (int j = 0; j < width; j++) {
-      cv::Vec3b pixel = resized.at<cv::Vec3b>(i, j);
-      int r = pixel[2];
-      int g = pixel[1];
-      int b = pixel[0];
-      char buf[50];
-      snprintf(buf, sizeof(buf), "\x1b[48;2;%d;%d;%dm \x1b[0m", r, g, b);
-      line += buf;
+    
+    for (int j = 0; j < width; ++j) {
+      const cv::Vec3b pixel = resized.at<cv::Vec3b>(i, j);
+      std::ostringstream oss;
+      oss << "\x1b[48;2;" << static_cast<int>(pixel[2]) << ';'
+          << static_cast<int>(pixel[1]) << ';' << static_cast<int>(pixel[0])
+          << "m \x1b[0m";
+      line += oss.str();
     }
-    lines.push_back(line);
+    lines.emplace_back(std::move(line));
   }
   return lines;
 }
 
-std::vector<std::string>
-Sakura::renderAsciiGrayscale(const cv::Mat &resized, const std::string &charSet,
-                             DitherMode dither) {
+std::vector<std::string> Sakura::renderAsciiGrayscale(const cv::Mat &resized, 
+                                                      std::string_view charSet,
+                                                      DitherMode dither) const {
   std::vector<std::string> lines;
   cv::Mat gray;
 
@@ -234,22 +230,29 @@ Sakura::renderAsciiGrayscale(const cv::Mat &resized, const std::string &charSet,
   } else {
     gray = resized;
   }
-  int height = gray.rows;
-  int width = gray.cols;
-  int num_chars = charSet.size();
+  
+  const int height = gray.rows;
+  const int width = gray.cols;
+  const int num_chars = static_cast<int>(charSet.size());
+  
+  lines.reserve(height);
 
   if (dither == FLOYD_STEINBERG) {
     gray.convertTo(gray, CV_32F, 1.0 / 255.0);
     cv::Mat error = cv::Mat::zeros(height, width, CV_32F);
-    for (int i = 0; i < height; i++) {
+    
+    for (int i = 0; i < height; ++i) {
       std::string line;
-      for (int j = 0; j < width; j++) {
-        float old_value = gray.at<float>(i, j) + error.at<float>(i, j);
-        old_value = std::max(0.0f, std::min(1.0f, old_value));
-        int level = static_cast<int>(round(old_value * (num_chars - 1)));
-        level = std::max(0, std::min(num_chars - 1, level));
-        float chosen_value = static_cast<float>(level) / (num_chars - 1);
-        float err = old_value - chosen_value;
+      line.reserve(width);
+      
+      for (int j = 0; j < width; ++j) {
+        // TODO: read more: https://en.wikipedia.org/wiki/Floyd%E2%80%93Steinberg_dithering
+        float old_value = std::clamp(gray.at<float>(i, j) + error.at<float>(i, j), 0.0f, 1.0f);
+        int level = std::clamp(static_cast<int>(std::round(old_value * (num_chars - 1))), 0, num_chars - 1);
+        const float chosen_value = static_cast<float>(level) / (num_chars - 1);
+        const float err = old_value - chosen_value;
+        
+        // Distribute error
         if (j + 1 < width) {
           error.at<float>(i, j + 1) += err * 7.0f / 16.0f;
         }
@@ -264,51 +267,52 @@ Sakura::renderAsciiGrayscale(const cv::Mat &resized, const std::string &charSet,
         }
         line += charSet[level];
       }
-      lines.push_back(line);
+      lines.emplace_back(std::move(line));
     }
   } else {
-    for (int i = 0; i < height; i++) {
+    for (int i = 0; i < height; ++i) {
       std::string line;
-      for (int j = 0; j < width; j++) {
-        int intensity = gray.at<uchar>(i, j);
-        int idx = (intensity * (num_chars - 1)) / 255;
+      line.reserve(width);
+      
+      for (int j = 0; j < width; ++j) {
+        const int intensity = gray.at<uchar>(i, j);
+        const int idx = (intensity * (num_chars - 1)) / 255;
         line += charSet[idx];
       }
-      lines.push_back(line);
+      lines.emplace_back(std::move(line));
     }
   }
   return lines;
 }
 
-std::vector<std::string>
-Sakura::renderImageToLines(const cv::Mat &img, const RenderOptions &options) {
+std::vector<std::string> Sakura::renderImageToLines(const cv::Mat &img, const RenderOptions &options) const {
   cv::Mat resized;
   int target_width, target_height;
-  if (!preprocessAndResize(img, options, resized, target_width,
-                           target_height)) {
+  if (!preprocessAndResize(img, options, resized, target_width, target_height)) {
     std::cerr << "Resize failed" << std::endl;
     return {};
   }
 
-  if (options.mode == EXACT || options.mode == ASCII_COLOR) {
-    if (resized.channels() == 1) {
-      cv::cvtColor(resized, resized, cv::COLOR_GRAY2BGR);
-    }
+  if ((options.mode == EXACT || options.mode == ASCII_COLOR) && resized.channels() == 1) {
+    cv::cvtColor(resized, resized, cv::COLOR_GRAY2BGR);
   }
 
-  if (options.mode == EXACT) {
-    return renderExact(resized, target_height);
-  } else if (options.mode == ASCII_COLOR) {
-    return renderAsciiColor(resized);
-  } else if (options.mode == ASCII_GRAY) {
-    const std::string &charSet = getCharSet(options.style);
-    return renderAsciiGrayscale(resized, charSet, options.dither);
+  switch (options.mode) {
+    case EXACT:
+      return renderExact(resized, target_height);
+    case ASCII_COLOR:
+      return renderAsciiColor(resized);
+    case ASCII_GRAY: {
+      const std::string &charSet = getCharSet(options.style);
+      return renderAsciiGrayscale(resized, charSet, options.dither);
+    }
+    default:
+      return {};
   }
-  return {};
 }
 
-cv::Mat Sakura::quantizeImage(const cv::Mat &inputImg, int numColors,
-                              cv::Mat &palette) {
+cv::Mat Sakura::quantizeImage(const cv::Mat &inputImg, int numColors, cv::Mat &palette) const {
+  // this part is just textbook implementation for noow
   cv::Mat sourceImg;
   if (inputImg.channels() == 1) {
     cv::cvtColor(inputImg, sourceImg, cv::COLOR_GRAY2BGR);
@@ -317,14 +321,12 @@ cv::Mat Sakura::quantizeImage(const cv::Mat &inputImg, int numColors,
   }
 
   cv::Mat workingImg;
-  if (sourceImg.rows * sourceImg.cols > 65536) {
-    double scale = sqrt(65536.0 / (sourceImg.rows * sourceImg.cols));
-    int newWidth = static_cast<int>(sourceImg.cols * scale);
-    int newHeight = static_cast<int>(sourceImg.rows * scale);
-    newWidth = std::max(1, newWidth);
-    newHeight = std::max(1, newHeight);
-    cv::resize(sourceImg, workingImg, cv::Size(newWidth, newHeight), 0, 0,
-               cv::INTER_AREA);
+  constexpr int MAX_PIXELS = 65536;
+  if (sourceImg.rows * sourceImg.cols > MAX_PIXELS) {
+    const double scale = std::sqrt(static_cast<double>(MAX_PIXELS) / (sourceImg.rows * sourceImg.cols));
+    const int newWidth = std::max(1, static_cast<int>(sourceImg.cols * scale));
+    const int newHeight = std::max(1, static_cast<int>(sourceImg.rows * scale));
+    cv::resize(sourceImg, workingImg, cv::Size(newWidth, newHeight), 0, 0, cv::INTER_AREA);
   } else {
     workingImg = sourceImg;
   }
@@ -332,29 +334,27 @@ cv::Mat Sakura::quantizeImage(const cv::Mat &inputImg, int numColors,
   cv::Mat samples = workingImg.reshape(1, workingImg.rows * workingImg.cols);
   samples.convertTo(samples, CV_32F);
 
-  cv::Mat labels;
-  cv::Mat centers;
+  cv::Mat labels, centers;
   cv::kmeans(samples, numColors, labels,
-             cv::TermCriteria(cv::TermCriteria::EPS + cv::TermCriteria::COUNT,
-                              20, 1.0),
+             cv::TermCriteria(cv::TermCriteria::EPS + cv::TermCriteria::COUNT, 20, 1.0),
              5, cv::KMEANS_PP_CENTERS, centers);
 
   centers.convertTo(palette, CV_8UC1);
   palette = palette.reshape(3, numColors);
 
   cv::Mat quantizedImg(sourceImg.size(), CV_8U);
-  for (int y = 0; y < sourceImg.rows; y++) {
-    for (int x = 0; x < sourceImg.cols; x++) {
-      cv::Vec3b pixel = sourceImg.at<cv::Vec3b>(y, x);
+  for (int y = 0; y < sourceImg.rows; ++y) {
+    for (int x = 0; x < sourceImg.cols; ++x) {
+      const cv::Vec3b pixel = sourceImg.at<cv::Vec3b>(y, x);
 
       int bestIdx = 0;
       double minDistSq = std::numeric_limits<double>::max();
 
-      for (int i = 0; i < numColors; i++) {
-        cv::Vec3b paletteColor = palette.at<cv::Vec3b>(i);
+      for (int i = 0; i < numColors; ++i) {
+        const cv::Vec3b paletteColor = palette.at<cv::Vec3b>(i);
         double distSq = 0;
-        for (int c = 0; c < 3; c++) {
-          double diff = pixel[c] - paletteColor[c];
+        for (int c = 0; c < 3; ++c) {
+          const double diff = pixel[c] - paletteColor[c];
           distSq += diff * diff;
         }
         if (distSq < minDistSq) {
@@ -362,136 +362,143 @@ cv::Mat Sakura::quantizeImage(const cv::Mat &inputImg, int numColors,
           bestIdx = i;
         }
       }
-      quantizedImg.at<uchar>(y, x) = bestIdx;
+      quantizedImg.at<uchar>(y, x) = static_cast<uchar>(bestIdx);
     }
   }
 
   return quantizedImg;
 }
 
-static int string_writer(char *data, int size, void *priv) {
+namespace {
+int string_writer(char *data, int size, void *priv) {
   auto *sixel_string = static_cast<std::string *>(priv);
   sixel_string->append(data, size);
   return size;
 }
+}
 
-std::string Sakura::renderSixel(const cv::Mat &img, int paletteSize) {
+std::string Sakura::renderSixel(const cv::Mat &img, int paletteSize) const {
   if (img.empty()) {
     return "";
   }
 
-  int optimized_palette = paletteSize;
-
   cv::Mat rgb_img;
   cv::cvtColor(img, rgb_img, cv::COLOR_BGR2RGB);
 
-  sixel_output_t *output = nullptr;
   std::string sixel_output_string;
-  if (sixel_output_new(&output, string_writer, &sixel_output_string, nullptr) !=
-      SIXEL_OK) {
-    return "";
+  sixel_output_string.reserve(1024 * 1024); // Pre-allocate :3
+
+  // Use RAII for sixel resources
+  struct SixelOutputDeleter {
+    void operator()(sixel_output_t *p) const { if (p) sixel_output_unref(p); }
+  };
+  struct SixelDitherDeleter {
+    void operator()(sixel_dither_t *p) const { if (p) sixel_dither_unref(p); }
+  };
+
+  std::unique_ptr<sixel_output_t, SixelOutputDeleter> output;
+  std::unique_ptr<sixel_dither_t, SixelDitherDeleter> dither;
+
+  {
+    sixel_output_t *raw_output = nullptr;
+    if (sixel_output_new(&raw_output, string_writer, &sixel_output_string, nullptr) != SIXEL_OK) {
+      return "";
+    }
+    output.reset(raw_output);
   }
 
-  sixel_dither_t *dither = nullptr;
-  if (sixel_dither_new(&dither, optimized_palette, nullptr) != SIXEL_OK ||
-      dither == nullptr) {
-    sixel_output_unref(output);
-    return "";
+  {
+    sixel_dither_t *raw_dither = nullptr;
+    if (sixel_dither_new(&raw_dither, paletteSize, nullptr) != SIXEL_OK || raw_dither == nullptr) {
+      return "";
+    }
+    dither.reset(raw_dither);
   }
 
-  if (sixel_dither_initialize(dither, rgb_img.data, rgb_img.cols, rgb_img.rows,
+  if (sixel_dither_initialize(dither.get(), rgb_img.data, rgb_img.cols, rgb_img.rows,
                               SIXEL_PIXELFORMAT_RGB888, SIXEL_LARGE_NORM,
-                              SIXEL_REP_CENTER_BOX,
-                              SIXEL_QUALITY_HIGH) != SIXEL_OK) {
-    sixel_dither_unref(dither);
-    sixel_output_unref(output);
+                              SIXEL_REP_CENTER_BOX, SIXEL_QUALITY_HIGH) != SIXEL_OK) {
     return "";
   }
 
-  if (sixel_encode(rgb_img.data, rgb_img.cols, rgb_img.rows, 3, dither,
-                   output) != SIXEL_OK) {
-    sixel_dither_unref(dither);
-    sixel_output_unref(output);
+  if (sixel_encode(rgb_img.data, rgb_img.cols, rgb_img.rows, 3, dither.get(), output.get()) != SIXEL_OK) {
     return "";
   }
-
-  sixel_dither_unref(dither);
-  sixel_output_unref(output);
 
   return sixel_output_string;
 }
 
 bool Sakura::renderGridFromUrls(const std::vector<std::string> &urls, int cols,
-                                const RenderOptions &options) {
+                                const RenderOptions &options) const {
   if (urls.empty() || cols <= 0) {
     std::cerr << "Invalid grid parameters" << std::endl;
     return false;
   }
 
-  int rows = (urls.size() + cols - 1) / cols;
-  auto [term_width, term_height] = getTerminalSize();
-  int cell_width = term_width / cols;
-  int cell_height = term_height / rows;
+  const int rows = (static_cast<int>(urls.size()) + cols - 1) / cols;
+  const auto [term_width, term_height] = getTerminalSize();
+  const int cell_width = term_width / cols;
+  const int cell_height = term_height / rows;
 
   std::vector<std::vector<std::string>> all_lines;
+  all_lines.reserve(urls.size());
+
   for (const auto &url : urls) {
-    auto response = cpr::Get(cpr::Url{url});
+    const auto response = cpr::Get(cpr::Url{url});
     if (response.status_code != 200) {
       std::cerr << "Failed to download image: " << url << std::endl;
       continue;
     }
-    std::vector<uchar> imgData(response.text.begin(), response.text.end());
-    cv::Mat img = cv::imdecode(imgData, cv::IMREAD_COLOR);
+    
+    const std::vector<uchar> imgData(response.text.begin(), response.text.end());
+    const cv::Mat img = cv::imdecode(imgData, cv::IMREAD_COLOR);
     if (img.empty()) {
       std::cerr << "Failed to decode image: " << url << std::endl;
       continue;
     }
+    
     RenderOptions cell_options = options;
     cell_options.width = cell_width;
     cell_options.height = cell_height;
-    all_lines.push_back(renderImageToLines(img, cell_options));
+    all_lines.emplace_back(renderImageToLines(img, cell_options));
   }
 
-  int max_height = 0;
-  for (const auto &lines : all_lines) {
-    max_height = std::max(max_height, static_cast<int>(lines.size()));
-  }
+  const int max_height = std::max_element(all_lines.begin(), all_lines.end(),
+    [](const auto &a, const auto &b) { return a.size() < b.size(); })->size();
 
-  for (int i = 0; i < max_height; i++) {
+  for (int i = 0; i < max_height; ++i) {
     std::string row_line;
-    for (int c = 0; c < cols && c < all_lines.size(); c++) {
-      if (i < all_lines[c].size()) {
+    row_line.reserve(term_width);
+    
+    for (int c = 0; c < cols && c < static_cast<int>(all_lines.size()); ++c) {
+      if (i < static_cast<int>(all_lines[c].size())) {
         row_line += all_lines[c][i];
       } else {
         row_line += std::string(cell_width, ' ');
       }
     }
-    printf("%s\n", row_line.c_str());
+    std::cout << row_line << '\n';
   }
-  fflush(stdout);
+  std::cout.flush();
   return true;
 }
 
-bool Sakura::renderGifFromUrl(const std::string &gifUrl,
-                              const RenderOptions &options) {
-  cv::VideoCapture cap(gifUrl);
+bool Sakura::renderGifFromUrl(std::string_view gifUrl, const RenderOptions &options) const {
+  cv::VideoCapture cap{std::string(gifUrl)};
   if (!cap.isOpened()) {
     std::cerr << "Failed to open GIF" << std::endl;
     return false;
   }
 
-  // Get GIF properties
-  int gif_width = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH));
-  int gif_height = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
+  const int gif_width = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH));
+  const int gif_height = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
   double fps = cap.get(cv::CAP_PROP_FPS);
-  if (fps <= 0)
-    fps = 10.0; // Default GIF speed
+  if (fps <= 0) fps = 10.0; // Default GIF speed
 
-  std::cout << "GIF: " << gif_width << "x" << gif_height << ", " << fps
-            << " FPS" << std::endl;
+  std::cout << "GIF: " << gif_width << "x" << gif_height << ", " << fps << " FPS" << std::endl;
 
-  double gifAspect = static_cast<double>(gif_width) / gif_height;
-  double termAspect = static_cast<double>(options.width) / options.height;
+  const double gifAspect = static_cast<double>(gif_width) / gif_height;
+  const double termAspect = static_cast<double>(options.width) / options.height;
 
   RenderOptions gifOptions = options;
 
@@ -508,47 +515,39 @@ bool Sakura::renderGifFromUrl(const std::string &gifUrl,
     gifOptions.height = static_cast<int>(gifOptions.height * 0.95);
   }
 
-  std::cout << "Scaled to: " << gifOptions.width << "x" << gifOptions.height
-            << std::endl;
+  std::cout << "Scaled to: " << gifOptions.width << "x" << gifOptions.height << std::endl;
 
-  auto frame_duration_ns = static_cast<long long>(1000000000.0 / fps);
-  auto start_time = std::chrono::high_resolution_clock::now();
+  const auto frame_duration_ns = std::chrono::nanoseconds(static_cast<long long>(1000000000.0 / fps));
+  const auto start_time = std::chrono::high_resolution_clock::now();
 
   int frame_number = 0;
   int frames_dropped = 0;
 
-  setvbuf(stdout, nullptr, _IONBF, 0);
+  std::cout.setf(std::ios::unitbuf); // Unbuffered output
   std::cout << "\033[2J\033[?25l" << std::flush;
 
   cv::Mat frame, resized_frame;
-  cv::Size target_size(gifOptions.width, gifOptions.height);
+  const cv::Size target_size(gifOptions.width, gifOptions.height);
 
-  while (true) {
-    auto frame_start = std::chrono::high_resolution_clock::now();
-    auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                          frame_start - start_time)
-                          .count();
+  while (cap.read(frame)) {
+    // time syncing
+    const auto frame_start = std::chrono::high_resolution_clock::now();
+    const auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(frame_start - start_time);
 
-    long long target_frame = elapsed_ns / frame_duration_ns;
+    const long long target_frame = elapsed_ns.count() / frame_duration_ns.count();
 
     if (frame_number < target_frame) {
-      int frames_behind = target_frame - frame_number;
+      const int frames_behind = static_cast<int>(target_frame - frame_number);
       if (frames_behind > 2 && frames_dropped < frame_number * 0.3) {
-        if (!cap.read(frame)) {
-          goto end_gif_playback;
-        }
         frame_number++;
         frames_dropped++;
         continue;
       }
     }
 
-    if (!cap.read(frame))
-      break;
-
     cv::resize(frame, resized_frame, target_size, 0, 0, cv::INTER_NEAREST);
 
-    std::string sixel_data = renderSixel(resized_frame, gifOptions.paletteSize);
+    const std::string sixel_data = renderSixel(resized_frame, gifOptions.paletteSize);
     std::cout << "\033[H" << sixel_data;
 
     frame_number++;
@@ -557,30 +556,26 @@ bool Sakura::renderGifFromUrl(const std::string &gifUrl,
       std::cout << "\nGIF: " << frame_number << " D:" << frames_dropped;
     }
 
-    auto next_frame_time_ns =
-        start_time + std::chrono::nanoseconds(frame_number * frame_duration_ns);
-    auto now = std::chrono::high_resolution_clock::now();
+    const auto next_frame_time = start_time + frame_number * frame_duration_ns;
+    const auto now = std::chrono::high_resolution_clock::now();
 
-    if (next_frame_time_ns > now) {
-      auto sleep_duration = next_frame_time_ns - now;
+    if (next_frame_time > now) {
+      const auto sleep_duration = next_frame_time - now;
       if (sleep_duration > std::chrono::milliseconds(2)) {
-        std::this_thread::sleep_for(sleep_duration -
-                                    std::chrono::milliseconds(1));
-        while (std::chrono::high_resolution_clock::now() < next_frame_time_ns) {
+        std::this_thread::sleep_for(sleep_duration - std::chrono::milliseconds(1));
+        while (std::chrono::high_resolution_clock::now() < next_frame_time) {
           std::this_thread::yield();
         }
       } else {
-        while (std::chrono::high_resolution_clock::now() < next_frame_time_ns) {
+        while (std::chrono::high_resolution_clock::now() < next_frame_time) {
           std::this_thread::yield();
         }
       }
     }
   }
 
-end_gif_playback:
-
   std::cout << "\033[?25h" << std::flush;
-  setvbuf(stdout, nullptr, _IOLBF, 0);
+  std::cout.unsetf(std::ios::unitbuf);
 
   cap.release();
 
@@ -591,44 +586,39 @@ end_gif_playback:
   return true;
 }
 
-bool Sakura::renderVideoFromUrl(const std::string &videoUrl,
-                                const RenderOptions &options) {
-  auto response = cpr::Get(cpr::Url{videoUrl});
+bool Sakura::renderVideoFromUrl(std::string_view videoUrl, const RenderOptions &options) const {
+  const auto response = cpr::Get(cpr::Url{std::string(videoUrl)});
   if (response.status_code != 200) {
-    std::cerr << "Failed to download video. Status: " << response.status_code
-              << std::endl;
+    std::cerr << "Failed to download video. Status: " << response.status_code << std::endl;
     return false;
   }
 
-  std::string tempFile =
-      "/tmp/sakura_video_" + std::to_string(std::time(nullptr));
+  const std::string tempFile = "/tmp/sakura_video_" + std::to_string(std::time(nullptr));
   std::ofstream file(tempFile, std::ios::binary);
   file.write(response.text.data(), response.text.size());
   file.close();
 
-  bool result = renderVideoFromFile(tempFile, options);
+  const bool result = renderVideoFromFile(tempFile, options);
 
   std::remove(tempFile.c_str());
   return result;
 }
 
-bool Sakura::renderVideoFromFile(const std::string &videoPath,
-                                 const RenderOptions &options) {
-  cv::VideoCapture cap(videoPath);
+bool Sakura::renderVideoFromFile(std::string_view videoPath, const RenderOptions &options) const {
+  cv::VideoCapture cap{std::string(videoPath)};
   if (!cap.isOpened()) {
     std::cerr << "Failed to open video: " << videoPath << std::endl;
     return false;
   }
 
-  // Get video properties
+  // video properties
   double fps = cap.get(cv::CAP_PROP_FPS);
-  int frame_count = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_COUNT));
-  int video_width = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH));
-  int video_height = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
-  double duration = frame_count / fps;
+  const int frame_count = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_COUNT));
+  const int video_width = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH));
+  const int video_height = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
+  const double duration = frame_count / fps;
 
-  if (fps <= 0)
-    fps = 30.0; // Default fallback
+  if (fps <= 0) fps = 30.0; // Default fallback
 
   std::cout << "Video: " << video_width << "x" << video_height << ", "
             << frame_count << " frames, " << fps << " FPS, " << duration
@@ -637,72 +627,63 @@ bool Sakura::renderVideoFromFile(const std::string &videoPath,
   RenderOptions videoOptions = options;
 
   double scale_factor = 0.95;
-  if (fps > 30.0)
-    scale_factor = 0.90;
-  if (fps > 50.0)
-    scale_factor = 0.85;
+  if (fps > 30.0) scale_factor = 0.90;
+  if (fps > 50.0) scale_factor = 0.85;
 
   videoOptions.width = static_cast<int>(options.width * scale_factor);
   videoOptions.height = static_cast<int>(options.height * scale_factor);
 
-  double videoAspect = static_cast<double>(video_width) / video_height;
+  const double videoAspect = static_cast<double>(video_width) / video_height;
   if (videoAspect > 1.0) {
     videoOptions.height = static_cast<int>(videoOptions.width / videoAspect);
   } else {
     videoOptions.width = static_cast<int>(videoOptions.height * videoAspect);
   }
 
-  std::cout << "Scaled to: " << videoOptions.width << "x" << videoOptions.height
-            << std::endl;
+  std::cout << "Scaled to: " << videoOptions.width << "x" << videoOptions.height << std::endl;
 
   cv::Mat frame, resized_frame;
-  cv::Size target_size(videoOptions.width, videoOptions.height);
+  const cv::Size target_size(videoOptions.width, videoOptions.height);
 
-  auto frame_duration_ns = static_cast<long long>(1000000000.0 / fps);
-  auto start_time = std::chrono::high_resolution_clock::now();
+  const auto frame_duration_ns = std::chrono::nanoseconds(static_cast<long long>(1000000000.0 / fps));
+  const auto start_time = std::chrono::high_resolution_clock::now();
 
   int frame_number = 0;
   int frames_dropped = 0;
   int frames_rendered = 0;
 
-  setvbuf(stdout, nullptr, _IONBF, 0);
+  std::cout.setf(std::ios::unitbuf);
   std::cout << "\033[2J\033[?25l" << std::flush;
 
   std::atomic<bool> audio_started{false};
-  std::future<void> audio_future = std::async(std::launch::async, [&]() {
+  auto audio_future = std::async(std::launch::async, [&]() {
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     audio_started = true;
-    std::string audio_cmd =
-        "ffplay -nodisp -autoexit \"" + videoPath + "\" 2>/dev/null";
+    const std::string audio_cmd = "ffplay -nodisp -autoexit \"" + std::string(videoPath) + "\" 2>/dev/null";
     std::system(audio_cmd.c_str());
   });
 
   std::string sixel_data;
   sixel_data.reserve(1024 * 1024);
 
-  while (true) {
-    auto frame_start = std::chrono::high_resolution_clock::now();
-    auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                          frame_start - start_time)
-                          .count();
+  while (cap.read(frame)) {
+    const auto frame_start = std::chrono::high_resolution_clock::now();
+    const auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(frame_start - start_time);
 
-    long long target_frame_number = elapsed_ns / frame_duration_ns;
+    const long long target_frame_number = elapsed_ns.count() / frame_duration_ns.count();
 
     if (frame_number < target_frame_number) {
-      int frames_behind = target_frame_number - frame_number;
+      const int frames_behind = static_cast<int>(target_frame_number - frame_number);
 
       if (frames_behind > 2) {
         while (frame_number < target_frame_number - 1) {
-          if (!cap.read(frame))
-            goto end_playback;
+          if (!cap.read(frame)) goto end_playback;
           frame_number++;
           frames_dropped++;
         }
       }
     }
 
-    if (!cap.read(frame))
-      break;
     frame_number++;
 
     cv::resize(frame, resized_frame, target_size, 0, 0, cv::INTER_NEAREST);
@@ -718,13 +699,11 @@ bool Sakura::renderVideoFromFile(const std::string &videoPath,
                 << " Audio: " << (audio_started ? "ON" : "OFF");
     }
 
-    auto next_frame_time =
-        start_time + std::chrono::nanoseconds(frame_number * frame_duration_ns);
-    auto now = std::chrono::high_resolution_clock::now();
+    const auto next_frame_time = start_time + frame_number * frame_duration_ns;
+    const auto now = std::chrono::high_resolution_clock::now();
 
     if (next_frame_time > now) {
-      auto sleep_duration = next_frame_time - now;
-
+      const auto sleep_duration = next_frame_time - now;
       if (sleep_duration > std::chrono::milliseconds(1)) {
         std::this_thread::sleep_for(sleep_duration);
       }
@@ -734,12 +713,12 @@ bool Sakura::renderVideoFromFile(const std::string &videoPath,
 end_playback:
 
   std::cout << "\033[?25h" << std::flush;
-  setvbuf(stdout, nullptr, _IOLBF, 0);
+  std::cout.unsetf(std::ios::unitbuf);
   cap.release();
   std::system("pkill -f ffplay 2>/dev/null");
 
-  double drop_rate = (frames_dropped * 100.0) / frame_number;
-  double render_rate = (frames_rendered * 100.0) / frame_number;
+  const double drop_rate = (frames_dropped * 100.0) / frame_number;
+  const double render_rate = (frames_rendered * 100.0) / frame_number;
   std::cout << "\nPlayback completed. Total: " << frame_number
             << ", Rendered: " << frames_rendered << " (" << std::fixed
             << std::setprecision(1) << render_rate << "%)"

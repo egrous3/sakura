@@ -3,6 +3,7 @@
 
 #include <opencv2/opencv.hpp>
 #include <string>
+#include <string_view>
 #include <vector>
 
 class Sakura {
@@ -24,39 +25,39 @@ public:
     double terminalAspectRatio = 1.0;
   };
 
-  bool renderFromUrl(const std::string &url, const RenderOptions &options);
-  bool renderFromUrl(const std::string &url);
-  bool renderFromMat(const cv::Mat &img, const RenderOptions &options);
+  bool renderFromUrl(std::string_view url, const RenderOptions &options) const;
+  bool renderFromUrl(std::string_view url) const;
+  bool renderFromMat(const cv::Mat &img, const RenderOptions &options) const;
   bool renderGridFromUrls(const std::vector<std::string> &urls, int cols,
-                          const RenderOptions &options);
-  bool renderGifFromUrl(const std::string &gifUrl,
-                        const RenderOptions &options);
-  bool renderVideoFromUrl(const std::string &videoUrl,
-                          const RenderOptions &options);
-  bool renderVideoFromFile(const std::string &videoPath,
-                           const RenderOptions &options);
+                          const RenderOptions &options) const;
+  bool renderGifFromUrl(std::string_view gifUrl,
+                        const RenderOptions &options) const;
+  bool renderVideoFromUrl(std::string_view videoUrl,
+                          const RenderOptions &options) const;
+  bool renderVideoFromFile(std::string_view videoPath,
+                           const RenderOptions &options) const;
   std::vector<std::string> renderImageToLines(const cv::Mat &img,
-                                              const RenderOptions &options);
+                                              const RenderOptions &options) const;
 
 private:
   static const std::string ASCII_CHARS_SIMPLE;
   static const std::string ASCII_CHARS_DETAILED;
   static const std::string ASCII_CHARS_BLOCKS;
 
-  const std::string &getCharSet(CharStyle style) const;
+  const std::string &getCharSet(CharStyle style) const noexcept;
   static std::pair<int, int> getTerminalSize();
   std::vector<std::string> renderExact(const cv::Mat &resized,
                                        int terminal_height) const;
   std::vector<std::string> renderAsciiColor(const cv::Mat &resized) const;
   std::vector<std::string> renderAsciiGrayscale(const cv::Mat &resized,
-                                                const std::string &charSet,
-                                                DitherMode dither);
-  std::string renderSixel(const cv::Mat &img, int paletteSize = 16);
+                                                std::string_view charSet,
+                                                DitherMode dither) const;
+  std::string renderSixel(const cv::Mat &img, int paletteSize = 16) const;
   cv::Mat quantizeImage(const cv::Mat &inputImg, int numColors,
-                        cv::Mat &palette);
+                        cv::Mat &palette) const;
   bool preprocessAndResize(const cv::Mat &img, const RenderOptions &options,
                            cv::Mat &resized, int &target_width,
-                           int &target_height);
+                           int &target_height) const;
 };
 
 #endif // SAKURA_HPP
