@@ -5,6 +5,7 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include <utility>
+#include <getopt.h>
 
 // Helper to get terminal pixel size (returns {width, height} in pixels)
 std::pair<int, int> getTerminalPixelSize() {
@@ -36,7 +37,86 @@ std::pair<int, int> calculateBestFitSize(int contentWidth, int contentHeight,
   return {outw, outh};
 }
 
-int main(void) {
+bool process_image(std::string url) {
+  Sakura sakura;
+  bool stat = false;
+  auto [termPixW, termPixH] = getTerminalPixelSize();
+
+  auto response = cpr::Get(cpr::Url{url});
+  if (response.status_code != 200) {
+    std::cerr << "Failed to download image. Status: " << response.status_code
+              << std::endl;
+    return 1;
+  }
+  std::vector<uchar> imgData(response.text.begin(), response.text.end());
+  cv::Mat img = cv::imdecode(imgData, cv::IMREAD_COLOR);
+  if (img.empty()) {
+    std::cerr << "Failed to decode image" << std::endl;
+    return 1;
+  }
+
+  // Calculate proper dimensions for this image
+  auto [outw, outh] =
+      calculateBestFitSize(img.cols, img.rows, termPixW, termPixH);
+
+  Sakura::RenderOptions options;
+  options.mode = Sakura::SIXEL;
+  options.dither = Sakura::FLOYD_STEINBERG;
+  options.terminalAspectRatio = 1.0;
+  options.width = outw;
+  options.height = outh;
+
+  return sakura.renderFromMat(img, options);
+}
+
+int main(int argc, char **argv) {
+  // Parse command line arguments
+  static struct option long_options[] = {
+      {"help",        no_argument,       0, 'h'},
+      {"image",       required_argument, 0, 'i'},
+      {0, 0, 0, 0}
+  };
+  
+  std::string video_path, image_path;
+  bool show_help = false;
+  
+  int opt;
+  int option_index = 0;
+
+  while ((opt = getopt_long(argc, argv, "hv:i:", long_options, &option_index)) != -1) {
+		switch (opt) {
+			case 'h':
+				std::cout << "Usage: program [options]\n"
+                  << "Options:\n"
+                  << "  -h, --help         Show help message\n"
+                  << "  -i, --image <path> Process image file\n";
+				return 0;
+        				
+      case 'i':
+        process_image( optarg );
+        break;
+				
+			case '?':
+				// getopt_long automatically prints error message
+				return 1;
+				
+			default:
+				std::cerr << "Unknown option: " << opt << std::endl;
+				return 1;
+		}
+	}
+	
+	// Handle any remaining non-option arguments
+	for (int i = optind; i < argc; i++) {
+		std::cout << "Non-option argument: " << argv[i] << std::endl;
+	}
+
+  if (argc > 1) {
+    // Return here as we have done via cli
+    return 0;
+  }
+
+  // Continue to existing interactive mode
   Sakura sakura;
 
   std::string url, gifUrl, videoUrl, localVideoPath;
@@ -57,32 +137,7 @@ int main(void) {
     std::cout << "Enter image URL: ";
     std::cin >> url;
     std::cout << "Rendering image...\n";
-    // Download image and calculate its dimensions
-    auto response = cpr::Get(cpr::Url{url});
-    if (response.status_code != 200) {
-      std::cerr << "Failed to download image. Status: " << response.status_code
-                << std::endl;
-      return 1;
-    }
-    std::vector<uchar> imgData(response.text.begin(), response.text.end());
-    cv::Mat img = cv::imdecode(imgData, cv::IMREAD_COLOR);
-    if (img.empty()) {
-      std::cerr << "Failed to decode image" << std::endl;
-      return 1;
-    }
-
-    // Calculate proper dimensions for this image
-    auto [outw, outh] =
-        calculateBestFitSize(img.cols, img.rows, termPixW, termPixH);
-
-    Sakura::RenderOptions options;
-    options.mode = Sakura::SIXEL;
-    options.dither = Sakura::FLOYD_STEINBERG;
-    options.terminalAspectRatio = 1.0;
-    options.width = outw;
-    options.height = outh;
-
-    stat = sakura.renderFromMat(img, options);
+    stat = process_image(url);
     break;
   }
   case 2: {
