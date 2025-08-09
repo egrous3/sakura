@@ -136,55 +136,57 @@ int main(int argc, char **argv) {
   
   int opt;
   int option_index = 0;
+  bool stat = false;
 
-  while ((opt = getopt_long(argc, argv, "hv:i:g:l:", long_options, &option_index)) != -1) {
-		switch (opt) {
-			case 'h':
-				std::cout << "Usage: sakura [options]\n"
-                  << "Options:\n"
-                  << "  -h, --help                 Show help message\n"
-                  << "  -i, --image <path>         Process image file\n"
-                  << "  -g, --gif <path>           Process GIF file\n"
-                  << "  -v, --video <path>         Process video file\n"
-                  << "  -l, --local-video <path>   Process local video file\n"
-        ;
-				return 0;
-        				
-      case 'i':
-        process_image( optarg );
-        break;
-      
-      case 'g':
-        process_gif( optarg );
-        break;
-      
-      case 'v':
-				process_video( optarg );
-				break;
-      
-      case 'l':
-				process_local_video( optarg );
-				break;
-				
-			case '?':
-				// getopt_long automatically prints error message
-				return 1;
-				
-			default:
-				std::cerr << "Unknown option: " << opt << std::endl;
-				return 1;
-		}
-	}
+  if (argc > 1) {
+    while ((opt = getopt_long(argc, argv, "hv:i:g:l:", long_options, &option_index)) != -1) {
+      switch (opt) {
+        case 'h':
+          std::cout << "Usage: sakura [options]\n"
+                    << "Options:\n"
+                    << "  -h, --help                 Show help message\n"
+                    << "  -i, --image <path>         Process image file\n"
+                    << "  -g, --gif <path>           Process GIF file\n"
+                    << "  -v, --video <path>         Process video file\n"
+                    << "  -l, --local-video <path>   Process local video file\n"
+          ;
+          return 0;
+                  
+        case 'i':
+          stat = process_image( optarg );
+          break;
+        
+        case 'g':
+          stat = process_gif( optarg );
+          break;
+        
+        case 'v':
+          stat = process_video( optarg );
+          break;
+        
+        case 'l':
+          stat = process_local_video( optarg );
+          break;
+          
+        case '?':
+          // getopt_long automatically prints error message
+          return 1;
+          
+        default:
+          std::cerr << "Unknown option: " << opt << std::endl;
+          return 1;
+      }
+    }
+    if (!stat) {
+      std::cerr << "Failed to render content\n";
+    }
+    return 0;
+  }
 	
 	// Handle any remaining non-option arguments
 	for (int i = optind; i < argc; i++) {
 		std::cout << "Non-option argument: " << argv[i] << std::endl;
 	}
-
-  if (argc > 1) {
-    // Return here as we have done via cli
-    return 0;
-  }
 
   // Continue to existing interactive mode
   Sakura sakura;
@@ -201,7 +203,6 @@ int main(int argc, char **argv) {
   int choice;
   std::cin >> choice;
 
-  bool stat = false;
   switch (choice) {
   case 1: {
     std::cout << "Enter image URL: ";
