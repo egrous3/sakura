@@ -103,6 +103,24 @@ bool process_video(std::string url) {
   return sakura.renderVideoFromUrl(url, options);
 }
 
+bool process_local_video(std::string path) {
+  Sakura sakura;
+  bool stat = false;
+  auto [termPixW, termPixH] = getTerminalPixelSize();
+
+  // For video, we'll let the sakura library handle sizing internally
+  // but still set reasonable defaults
+  Sakura::RenderOptions options;
+  options.mode = Sakura::SIXEL;
+  options.dither = Sakura::FLOYD_STEINBERG;
+  options.terminalAspectRatio = 1.0;
+  options.width = termPixW;
+  options.height = termPixH;
+
+  stat = sakura.renderVideoFromFile(path, options);
+  return stat;
+}
+
 int main(int argc, char **argv) {
   // Parse command line arguments
   static struct option long_options[] = {
@@ -119,15 +137,16 @@ int main(int argc, char **argv) {
   int opt;
   int option_index = 0;
 
-  while ((opt = getopt_long(argc, argv, "hv:i:g:", long_options, &option_index)) != -1) {
+  while ((opt = getopt_long(argc, argv, "hv:i:g:l:", long_options, &option_index)) != -1) {
 		switch (opt) {
 			case 'h':
 				std::cout << "Usage: sakura [options]\n"
                   << "Options:\n"
-                  << "  -h, --help           Show help message\n"
-                  << "  -i, --image <path>   Process image file\n"
-                  << "  -g, --gif <path>     Process GIF file\n"
-                  << "  -v, --video <path>   Process video file\n"
+                  << "  -h, --help                 Show help message\n"
+                  << "  -i, --image <path>         Process image file\n"
+                  << "  -g, --gif <path>           Process GIF file\n"
+                  << "  -v, --video <path>         Process video file\n"
+                  << "  -l, --local-video <path>   Process local video file\n"
         ;
 				return 0;
         				
@@ -141,6 +160,10 @@ int main(int argc, char **argv) {
       
       case 'v':
 				process_video( optarg );
+				break;
+      
+      case 'l':
+				process_local_video( optarg );
 				break;
 				
 			case '?':
@@ -206,14 +229,7 @@ int main(int argc, char **argv) {
     std::cin >> localVideoPath;
     std::cout << "Rendering video from file (with audio)...\n";
 
-    Sakura::RenderOptions options;
-    options.mode = Sakura::SIXEL;
-    options.dither = Sakura::FLOYD_STEINBERG;
-    options.terminalAspectRatio = 1.0;
-    options.width = termPixW;
-    options.height = termPixH;
-
-    stat = sakura.renderVideoFromFile(localVideoPath, options);
+    stat = process_local_video(localVideoPath);
     break;
   }
   default: {
