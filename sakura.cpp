@@ -657,10 +657,15 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
   RenderOptions videoOptions = options;
 
   double scale_factor = 0.95;
-  if (fps > 30.0)
-    scale_factor = 0.90;
-  if (fps > 50.0)
-    scale_factor = 0.85;
+  if (options.fit == FitMode::COVER) {
+    // For COVER, do not shrink: aim to fill the terminal fully
+    scale_factor = 1.0;
+  } else {
+    if (fps > 30.0)
+      scale_factor = 0.90;
+    if (fps > 50.0)
+      scale_factor = 0.85;
+  }
 
   videoOptions.width = static_cast<int>(options.width * scale_factor);
   videoOptions.height = static_cast<int>(options.height * scale_factor);
@@ -709,10 +714,18 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
   }
 
   cv::Mat frame, resized_frame;
-  const cv::Size target_size(videoOptions.width, videoOptions.height);
+  const int base_out_w = videoOptions.width;
+  const int base_out_h = videoOptions.height;
+  std::atomic<double> current_scale{1.0};
+  cv::Size target_size(base_out_w, base_out_h);
 
-  const auto frame_duration_ns =
-      std::chrono::nanoseconds(static_cast<long long>(1000000000.0 / fps));
+  // Apply target FPS downsampling if requested
+  double render_fps = fps;
+  if (options.targetFps > 0.0 && options.targetFps < fps) {
+    render_fps = options.targetFps;
+  }
+  const auto frame_duration_ns = std::chrono::nanoseconds(
+      static_cast<long long>(1000000000.0 / render_fps));
 
   int frame_number = 0;
   int frames_dropped = 0;
@@ -737,13 +750,34 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
   std::thread reader_thread([&]() {
     cv::Mat raw, resized_local;
     int read_index = 0;
+    int source_index = 0;
+    double frame_accumulator = 0.0;
+    const double ratio = render_fps / fps; // 0<ratio<=1
     while (!stop_reader.load(std::memory_order_relaxed)) {
       if (!cap.read(raw)) {
         break;
       }
+      // Downsample input frames if targetFps < source fps based on ratio
+      frame_accumulator += ratio;
+      if (frame_accumulator < 1.0) {
+        // skip encoding this source frame
+        ++source_index;
+        continue;
+      }
+      frame_accumulator -= 1.0;
+      const double scale_snapshot =
+          (options.fit == FitMode::COVER)
+              ? 1.0
+              : std::clamp(current_scale.load(std::memory_order_relaxed),
+                           options.minScaleFactor, options.maxScaleFactor);
+      const int out_w =
+          std::max(1, static_cast<int>(base_out_w * scale_snapshot));
+      const int out_h =
+          std::max(1, static_cast<int>(base_out_h * scale_snapshot));
+      const cv::Size dyn_size(out_w, out_h);
       const int interpolation =
           options.fastResize ? cv::INTER_NEAREST : cv::INTER_AREA;
-      cv::resize(raw, resized_local, target_size, 0, 0, interpolation);
+      cv::resize(raw, resized_local, dyn_size, 0, 0, interpolation);
 
       FrameItem item{resized_local.clone(), read_index++};
       std::unique_lock<std::mutex> lk(queue_mutex);
@@ -773,7 +807,7 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
     });
   }
 
-  // using low-latency flags and without decoding video
+  // Start audio (low-latency) and optionally adapt quality over time
   std::atomic<bool> audio_running{true};
   auto audio_future = std::async(std::launch::async, [&]() {
     const std::string audio_cmd = "ffplay -nodisp -autoexit -vn -nostats "
@@ -787,6 +821,15 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
   const auto start_time = std::chrono::steady_clock::now();
 
   // Playback loop
+  // Adaptive controls
+  int adaptive_palette = videoOptions.paletteSize;
+  int last_draw_w = 0;
+  int last_draw_h = 0;
+  int window_total = 0;
+  int window_dropped = 0;
+  int stable_intervals = 0;
+  const int adjust_interval_frames = std::max(10, static_cast<int>(render_fps));
+
   while (true) {
     FrameItem item;
     {
@@ -816,6 +859,7 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
         while (drop_budget-- > 0) {
           frame_queue.pop_front();
           frames_dropped++;
+          window_dropped++;
         }
       }
 
@@ -825,14 +869,39 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
       cv_not_full.notify_one();
     }
 
-    sixel_data = renderSixel(item.frame, videoOptions.paletteSize);
+    // Adaptive palette: reduce when behind, restore when caught up
+    if (options.adaptivePalette) {
+      const auto now = std::chrono::steady_clock::now();
+      const long long target_frame_number =
+          std::chrono::duration_cast<std::chrono::nanoseconds>(now - start_time)
+              .count() /
+          frame_duration_ns.count();
+      const int lag = static_cast<int>(target_frame_number - item.index);
+      if (lag > 2 && adaptive_palette > options.minPaletteSize) {
+        adaptive_palette =
+            std::max(options.minPaletteSize, adaptive_palette / 2);
+      } else if (lag <= 1 && adaptive_palette < options.maxPaletteSize) {
+        adaptive_palette =
+            std::min(options.maxPaletteSize, adaptive_palette * 2);
+      }
+    }
 
+    sixel_data = renderSixel(item.frame, adaptive_palette);
+
+    // Clear screen if current frame is smaller than the previous to avoid
+    // leftover pixels
+    if (item.frame.cols < last_draw_w || item.frame.rows < last_draw_h) {
+      std::cout << "\033[2J";
+    }
     std::cout << "\033[H";
     std::cout.write(sixel_data.data(),
                     static_cast<std::streamsize>(sixel_data.size()));
     std::cout.flush();
     frames_rendered++;
+    window_total++;
     frame_number = item.index + 1;
+    last_draw_w = item.frame.cols;
+    last_draw_h = item.frame.rows;
 
     const auto next_frame_time =
         start_time + (frame_duration_ns * frame_number);
@@ -845,6 +914,36 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
       while (std::chrono::steady_clock::now() < next_frame_time) {
         std::this_thread::yield();
       }
+    }
+
+    // Adaptive scale: adjust output scale based on recent drop ratio
+    if (options.adaptiveScale && options.fit != FitMode::COVER &&
+        window_total >= adjust_interval_frames) {
+      const double recent_drop =
+          window_total > 0
+              ? (static_cast<double>(window_dropped) / window_total)
+              : 0.0;
+      if (recent_drop > 0.30) {
+        const double new_scale = std::max(
+            options.minScaleFactor,
+            current_scale.load(std::memory_order_relaxed) - options.scaleStep);
+        current_scale.store(new_scale, std::memory_order_relaxed);
+        stable_intervals = 0;
+      } else if (recent_drop < 0.10) {
+        stable_intervals++;
+        if (stable_intervals >= 2) {
+          const double new_scale =
+              std::min(options.maxScaleFactor,
+                       current_scale.load(std::memory_order_relaxed) +
+                           options.scaleStep);
+          current_scale.store(new_scale, std::memory_order_relaxed);
+          stable_intervals = 0;
+        }
+      } else {
+        stable_intervals = 0;
+      }
+      window_total = 0;
+      window_dropped = 0;
     }
   }
 

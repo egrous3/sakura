@@ -29,6 +29,16 @@ public:
     bool staticPalette = false;
     FitMode fit = COVER;
     bool fastResize = false; // Use INTER_NEAREST for video pre-scaling
+    // Throughput controls
+    double targetFps =
+        0.0; // 0 = follow source FPS; otherwise downsample to this
+    bool adaptivePalette = false;
+    int minPaletteSize = 64;      // when adaptivePalette is true
+    int maxPaletteSize = 256;     // cap
+    bool adaptiveScale = false;   // dynamically adjust scale to keep up
+    double minScaleFactor = 0.80; // 80% of computed size
+    double maxScaleFactor = 1.00; // up to full size
+    double scaleStep = 0.05;      // adjust step per window
   };
 
   bool renderFromUrl(std::string_view url, const RenderOptions &options) const;

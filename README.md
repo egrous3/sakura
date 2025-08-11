@@ -22,7 +22,7 @@ A high-performance minimal (~1k lines of code) terminal-based multimedia library
 - **Synchronized Audio**: Real-time audio playback with video using ffplay
  - **Adaptive Scaling / Fit Modes**: Fill the terminal using fit modes (contain, cover, stretch)
 - **URL Download**: Direct streaming from web URLs
-- **Performance Optimization**: Predecode queue, advanced frame timing and adaptive skipping for smooth playback
+- **Performance Optimization**: Predecode queue, target-FPS downsampling, adaptive palette/scale, and precise frame pacing
 
 ### Rendering Modes
 1. **SIXEL Mode**: High-quality graphics with full color palette
@@ -231,6 +231,7 @@ echo -e "4\nmedia/your_video.mp4" | ./sakura
 
 1. **Image/Video Decode**: OpenCV handles decoding
 2. **Pre-scaling**: Reader thread pre-scales frames (INTER_NEAREST when `fastResize=true`, otherwise INTER_AREA)
+   - Optional target-FPS downsampling to stabilize throughput
 3. **SIXEL Encoding**: libsixel converts RGB data to SIXEL format
 4. **Terminal Output**: Direct SIXEL sequence transmission with precise pacing
 
@@ -273,6 +274,7 @@ if (frame_number < target_frame_number) {
 ### Frame Timing Optimizations
 
 - **Predecode Queue**: Background thread decodes and scales frames into a bounded queue
+- **Target FPS Downsampling**: Time-based input frame skipping to match a stable render rate
 - **Adaptive Frame Skipping**: Drops multiple stale frames at once when far behind
 - **Steady Clock Pacing**: `std::chrono::steady_clock` with sleep-until pacing
 - **Buffered I/O**: Unit-buffered output plus explicit flush to avoid terminal buffering stalls
@@ -295,6 +297,7 @@ if (frame_number < target_frame_number) {
 
 - **Palette Size**: Configurable color palette (typically 256)
 - **Static Palette (optional)**: Reuse first-frame palette for more stable colors and less overhead
+- **Adaptive Palette (optional)**: Shrink palette when behind, restore when caught up
 - **Interpolation**: INTER_NEAREST for speed (when `fastResize=true`), INTER_AREA for quality
 
 ## SIXEL Terminal Support
@@ -374,6 +377,15 @@ struct RenderOptions {
     bool staticPalette = false;  // reuse first palette for all frames
     FitMode fit = COVER;         // STRETCH, COVER, CONTAIN
     bool fastResize = false;     // use INTER_NEAREST when true
+    // Throughput controls
+    double targetFps = 0.0;      // 0 = follow source FPS; otherwise downsample to this
+    bool adaptivePalette = false;
+    int minPaletteSize = 64;
+    int maxPaletteSize = 256;
+    bool adaptiveScale = false;  // dynamically adjust scale based on drop rate
+    double minScaleFactor = 0.80;
+    double maxScaleFactor = 1.00;
+    double scaleStep = 0.05;
 };
 ```
 
@@ -408,11 +420,19 @@ int main() {
     options.paletteSize = 256;
     options.width = 800;
     options.height = 600;
-    options.queueSize = 32;
-    options.prebufferFrames = 8;
+    options.queueSize = 48;
+    options.prebufferFrames = 12;
     options.staticPalette = true;
     options.fit = COVER;
-    options.fastResize = true; // maximize FPS
+    options.fastResize = true;    // maximize FPS
+    options.targetFps = 30.0;     // stabilize rendering on SIXEL terminals
+    options.adaptivePalette = true;
+    options.minPaletteSize = 64;
+    options.maxPaletteSize = 256;
+    options.adaptiveScale = true; // auto-tune size when drops persist
+    options.minScaleFactor = 0.85;
+    options.maxScaleFactor = 1.00;
+    options.scaleStep = 0.05;
     
     // Render image
     renderer.renderFromUrl("https://example.com/image.jpg", options);
