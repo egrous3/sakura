@@ -1,11 +1,11 @@
 #include "sakura.hpp"
 #include <cpr/cpr.h>
+#include <getopt.h>
 #include <iostream>
 #include <opencv2/opencv.hpp>
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include <utility>
-#include <getopt.h>
 
 // Helper to get terminal pixel size (returns {width, height} in pixels)
 std::pair<int, int> getTerminalPixelSize() {
@@ -124,58 +124,57 @@ bool process_local_video(std::string path) {
 int main(int argc, char **argv) {
   // Parse command line arguments
   static struct option long_options[] = {
-      {"help",        no_argument,       0, 'h'},
-      {"image",       required_argument, 0, 'i'},
-      {"gif",         required_argument, 0, 'g'},
-      {"video",       required_argument, 0, 'v'},
+      {"help", no_argument, 0, 'h'},
+      {"image", required_argument, 0, 'i'},
+      {"gif", required_argument, 0, 'g'},
+      {"video", required_argument, 0, 'v'},
       {"local-video", required_argument, 0, 'l'},
-      {0, 0, 0, 0}
-  };
-  
+      {0, 0, 0, 0}};
+
   std::string video_path, image_path;
   bool show_help = false;
-  
+
   int opt;
   int option_index = 0;
   bool stat = false;
 
   if (argc > 1) {
-    while ((opt = getopt_long(argc, argv, "hv:i:g:l:", long_options, &option_index)) != -1) {
+    while ((opt = getopt_long(argc, argv, "hv:i:g:l:", long_options,
+                              &option_index)) != -1) {
       switch (opt) {
-        case 'h':
-          std::cout << "Usage: sakura [options]\n"
-                    << "Options:\n"
-                    << "  -h, --help                 Show help message\n"
-                    << "  -i, --image <path>         Process image file\n"
-                    << "  -g, --gif <path>           Process GIF file\n"
-                    << "  -v, --video <path>         Process video file\n"
-                    << "  -l, --local-video <path>   Process local video file\n"
-          ;
-          return 0;
-                  
-        case 'i':
-          stat = process_image( optarg );
-          break;
-        
-        case 'g':
-          stat = process_gif( optarg );
-          break;
-        
-        case 'v':
-          stat = process_video( optarg );
-          break;
-        
-        case 'l':
-          stat = process_local_video( optarg );
-          break;
-          
-        case '?':
-          // getopt_long automatically prints error message
-          return 1;
-          
-        default:
-          std::cerr << "Unknown option: " << opt << std::endl;
-          return 1;
+      case 'h':
+        std::cout << "Usage: sakura [options]\n"
+                  << "Options:\n"
+                  << "  -h, --help                 Show help message\n"
+                  << "  -i, --image <path>         Process image file\n"
+                  << "  -g, --gif <path>           Process GIF file\n"
+                  << "  -v, --video <path>         Process video file\n"
+                  << "  -l, --local-video <path>   Process local video file\n";
+        return 0;
+
+      case 'i':
+        stat = process_image(optarg);
+        break;
+
+      case 'g':
+        stat = process_gif(optarg);
+        break;
+
+      case 'v':
+        stat = process_video(optarg);
+        break;
+
+      case 'l':
+        stat = process_local_video(optarg);
+        break;
+
+      case '?':
+        // getopt_long automatically prints error message
+        return 1;
+
+      default:
+        std::cerr << "Unknown option: " << opt << std::endl;
+        return 1;
       }
     }
     if (!stat) {
@@ -183,11 +182,11 @@ int main(int argc, char **argv) {
     }
     return 0;
   }
-	
-	// Handle any remaining non-option arguments
-	for (int i = optind; i < argc; i++) {
-		std::cout << "Non-option argument: " << argv[i] << std::endl;
-	}
+
+  // Handle any remaining non-option arguments
+  for (int i = optind; i < argc; i++) {
+    std::cout << "Non-option argument: " << argv[i] << std::endl;
+  }
 
   // Continue to existing interactive mode
   Sakura sakura;

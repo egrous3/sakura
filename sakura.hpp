@@ -36,8 +36,8 @@ public:
                           const RenderOptions &options) const;
   bool renderVideoFromFile(std::string_view videoPath,
                            const RenderOptions &options) const;
-  std::vector<std::string> renderImageToLines(const cv::Mat &img,
-                                              const RenderOptions &options) const;
+  std::vector<std::string>
+  renderImageToLines(const cv::Mat &img, const RenderOptions &options) const;
 
 private:
   static const std::string ASCII_CHARS_SIMPLE;
