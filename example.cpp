@@ -112,8 +112,8 @@ bool process_local_video(std::string path) {
   options.width = termPixW;
   options.height = termPixH;
   options.paletteSize = 256;
-  options.queueSize = 64;
-  options.prebufferFrames = 32;
+  options.queueSize = 32;
+  options.prebufferFrames = 8;
   options.staticPalette = false;
   options.fastResize = false;
   options.targetFps = 30.0; // cap to 30 for smoother playback on terminals
@@ -127,7 +127,7 @@ bool process_local_video(std::string path) {
   options.scaleStep = 0.05;
   options.hwAccelPipe = false;
   options.fastResize = false;
-  options.tileUpdates = true;
+  options.tileUpdates = false;
   options.tileWidth = 128;
   options.tileHeight = 64;
   options.tileDiffThreshold = 5.0;

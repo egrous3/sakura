@@ -456,8 +456,8 @@ std::string Sakura::renderSixel(const cv::Mat &img, int paletteSize) const {
 
   if (sixel_dither_initialize(dither.get(), rgb_img.data, rgb_img.cols,
                               rgb_img.rows, SIXEL_PIXELFORMAT_RGB888,
-                              SIXEL_LARGE_NORM, SIXEL_REP_CENTER_BOX,
-                              SIXEL_QUALITY_HIGH) != SIXEL_OK) {
+                              SIXEL_LARGE_NORM, SIXEL_REP_AVERAGE_COLORS,
+                              SIXEL_QUALITY_AUTO) != SIXEL_OK) {
     return "";
   }
 
@@ -766,14 +766,31 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
     cv::Mat frame;
     int index = 0;
   };
+  struct SixelItem {
+    std::string sixel;
+    int index = 0;
+    int width = 0;
+    int height = 0;
+  };
 
   std::deque<FrameItem> frame_queue;
   std::mutex queue_mutex;
   std::condition_variable cv_not_empty, cv_not_full;
   const std::size_t max_queue_size =
       static_cast<std::size_t>(std::max(1, options.queueSize));
+
+  std::deque<SixelItem> sixel_queue;
+  std::mutex sixel_queue_mutex;
+  std::condition_variable cv_sixel_not_empty, cv_sixel_not_full;
+  const std::size_t max_sixel_queue_size =
+      static_cast<std::size_t>(std::max(1, options.queueSize));
+
   std::atomic<bool> reader_done{false};
-  std::atomic<bool> stop_reader{false};
+  std::atomic<bool> encoder_done{false};
+  std::atomic<bool> stop_pipeline{false};
+
+  std::atomic<int> next_sixel_index_to_push{0};
+  std::map<int, SixelItem> sixel_map;
 
   std::thread reader_thread([&]() {
     cv::Mat raw, resized_local;
@@ -781,7 +798,7 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
     int source_index = 0;
     double frame_accumulator = 0.0;
     const double ratio = render_fps / fps; // 0<ratio<=1
-    while (!stop_reader.load(std::memory_order_relaxed)) {
+    while (!stop_pipeline.load(std::memory_order_relaxed)) {
       if (!cap.read(raw)) {
         break;
       }
@@ -810,10 +827,10 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
       FrameItem item{resized_local.clone(), read_index++};
       std::unique_lock<std::mutex> lk(queue_mutex);
       cv_not_full.wait(lk, [&] {
-        return stop_reader.load(std::memory_order_relaxed) ||
+        return stop_pipeline.load(std::memory_order_relaxed) ||
                frame_queue.size() < max_queue_size;
       });
-      if (stop_reader.load(std::memory_order_relaxed)) {
+      if (stop_pipeline.load(std::memory_order_relaxed)) {
         break;
       }
       frame_queue.emplace_back(std::move(item));
@@ -824,14 +841,84 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
     cv_not_empty.notify_all();
   });
 
-  std::string sixel_data;
-  sixel_data.reserve(1024 * 1024);
+  std::atomic<int> current_palette_size{videoOptions.paletteSize};
+
+  std::vector<std::thread> encoder_threads;
+  const int num_encoders =
+      std::max(1, static_cast<int>(std::thread::hardware_concurrency() / 2));
+
+  for (int i = 0; i < num_encoders; ++i) {
+    encoder_threads.emplace_back([&]() {
+      while (true) {
+        FrameItem item;
+        {
+          std::unique_lock<std::mutex> lk(queue_mutex);
+          cv_not_empty.wait(lk, [&] {
+            return stop_pipeline.load(std::memory_order_relaxed) ||
+                   !frame_queue.empty() || reader_done.load();
+          });
+
+          if (stop_pipeline.load(std::memory_order_relaxed) ||
+              (frame_queue.empty() && reader_done.load())) {
+            break;
+          }
+
+          item = std::move(frame_queue.front());
+          frame_queue.pop_front();
+          lk.unlock();
+          cv_not_full.notify_one();
+        }
+
+        const std::string sixel_data =
+            renderSixel(item.frame, current_palette_size.load());
+
+        SixelItem sixel_item{std::move(sixel_data), item.index,
+                             item.frame.cols, item.frame.rows};
+
+        {
+          std::unique_lock<std::mutex> lk(sixel_queue_mutex);
+          sixel_map[item.index] = std::move(sixel_item);
+
+          // If this thread just produced the next frame in sequence,
+          // it's responsible for pushing it and any subsequent frames.
+          if (item.index == next_sixel_index_to_push) {
+            while (sixel_map.count(next_sixel_index_to_push)) {
+              cv_sixel_not_full.wait(lk, [&] {
+                return stop_pipeline.load(std::memory_order_relaxed) ||
+                       sixel_queue.size() < max_sixel_queue_size;
+              });
+              if (stop_pipeline.load(std::memory_order_relaxed))
+                break;
+
+              sixel_queue.push_back(
+                  std::move(sixel_map.at(next_sixel_index_to_push)));
+              sixel_map.erase(next_sixel_index_to_push);
+              next_sixel_index_to_push++;
+              cv_sixel_not_empty.notify_one();
+            }
+          }
+        }
+      }
+    });
+  }
+
+  std::thread all_encoders_done_waiter([&]() {
+    for (auto &t : encoder_threads) {
+      if (t.joinable()) {
+        t.join();
+      }
+    }
+    encoder_done = true;
+    cv_sixel_not_empty.notify_all();
+  });
+
   {
-    std::unique_lock<std::mutex> lk(queue_mutex);
-    cv_not_empty.wait(lk, [&] {
-      return reader_done.load(std::memory_order_relaxed) ||
-             frame_queue.size() >=
-                 static_cast<std::size_t>(std::max(0, options.prebufferFrames));
+    std::unique_lock<std::mutex> lk(sixel_queue_mutex);
+    cv_sixel_not_empty.wait(lk, [&] {
+      return encoder_done.load(std::memory_order_relaxed) ||
+             sixel_queue.size() >=
+                 static_cast<std::size_t>(
+                     std::max(0, options.prebufferFrames / 2));
     });
   }
 
@@ -850,7 +937,6 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
 
   // Playback loop
   // Adaptive controls
-  int adaptive_palette = videoOptions.paletteSize;
   int last_draw_w = 0;
   int last_draw_h = 0;
   int window_total = 0;
@@ -859,15 +945,15 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
   const int adjust_interval_frames = std::max(10, static_cast<int>(render_fps));
 
   while (true) {
-    FrameItem item;
+    SixelItem item;
     {
-      std::unique_lock<std::mutex> lk(queue_mutex);
-      if (frame_queue.empty()) {
-        if (reader_done.load(std::memory_order_relaxed)) {
+      std::unique_lock<std::mutex> lk(sixel_queue_mutex);
+      if (sixel_queue.empty()) {
+        if (encoder_done.load(std::memory_order_relaxed)) {
           break;
         }
-        cv_not_empty.wait_for(lk, std::chrono::milliseconds(2));
-        if (frame_queue.empty()) {
+        cv_sixel_not_empty.wait_for(lk, std::chrono::milliseconds(2));
+        if (sixel_queue.empty()) {
           continue;
         }
       }
@@ -879,22 +965,22 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
               .count() /
           frame_duration_ns.count();
 
-      if (frame_queue.size() > 2) {
+      if (sixel_queue.size() > 2) {
         const int behind =
-            static_cast<int>(target_frame_number - frame_queue.front().index);
+            static_cast<int>(target_frame_number - sixel_queue.front().index);
         int drop_budget =
-            std::min<int>(behind - 1, static_cast<int>(frame_queue.size()) - 1);
+            std::min<int>(behind - 1, static_cast<int>(sixel_queue.size()) - 1);
         while (drop_budget-- > 0) {
-          frame_queue.pop_front();
+          sixel_queue.pop_front();
           frames_dropped++;
           window_dropped++;
         }
       }
 
-      item = std::move(frame_queue.front());
-      frame_queue.pop_front();
+      item = std::move(sixel_queue.front());
+      sixel_queue.pop_front();
       lk.unlock();
-      cv_not_full.notify_one();
+      cv_sixel_not_full.notify_one();
     }
 
     // Adaptive palette: reduce when behind, restore when caught up
@@ -905,31 +991,31 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
               .count() /
           frame_duration_ns.count();
       const int lag = static_cast<int>(target_frame_number - item.index);
-      if (lag > 2 && adaptive_palette > options.minPaletteSize) {
-        adaptive_palette =
-            std::max(options.minPaletteSize, adaptive_palette / 2);
-      } else if (lag <= 1 && adaptive_palette < options.maxPaletteSize) {
-        adaptive_palette =
-            std::min(options.maxPaletteSize, adaptive_palette * 2);
+      if (lag > 2 &&
+          current_palette_size.load() > options.minPaletteSize) {
+        current_palette_size =
+            std::max(options.minPaletteSize, current_palette_size.load() / 2);
+      } else if (lag <= 1 &&
+                 current_palette_size.load() < options.maxPaletteSize) {
+        current_palette_size =
+            std::min(options.maxPaletteSize, current_palette_size.load() * 2);
       }
     }
 
-    sixel_data = renderSixel(item.frame, adaptive_palette);
-
     // Clear screen if current frame is smaller than the previous to avoid
     // leftover pixels
-    if (item.frame.cols < last_draw_w || item.frame.rows < last_draw_h) {
+    if (item.width < last_draw_w || item.height < last_draw_h) {
       std::cout << "\033[2J";
     }
     std::cout << "\033[H";
-    std::cout.write(sixel_data.data(),
-                    static_cast<std::streamsize>(sixel_data.size()));
+    std::cout.write(item.sixel.data(),
+                    static_cast<std::streamsize>(item.sixel.size()));
     std::cout.flush();
     frames_rendered++;
     window_total++;
     frame_number = item.index + 1;
-    last_draw_w = item.frame.cols;
-    last_draw_h = item.frame.rows;
+    last_draw_w = item.width;
+    last_draw_h = item.height;
 
     const auto next_frame_time =
         start_time + (frame_duration_ns * frame_number);
@@ -975,11 +1061,15 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
     }
   }
 
-  stop_reader = true;
+  stop_pipeline = true;
   cv_not_full.notify_all();
   cv_not_empty.notify_all();
+  cv_sixel_not_full.notify_all();
+  cv_sixel_not_empty.notify_all();
   if (reader_thread.joinable())
     reader_thread.join();
+  if (all_encoders_done_waiter.joinable())
+    all_encoders_done_waiter.join();
 
   std::cout << "\033[?25h" << std::flush;
   std::cout.unsetf(std::ios::unitbuf);
