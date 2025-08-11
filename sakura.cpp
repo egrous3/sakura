@@ -409,12 +409,30 @@ int string_writer(char *data, int size, void *priv) {
 } // namespace
 
 std::string Sakura::renderSixel(const cv::Mat &img, int paletteSize) const {
-  if (img.empty()) {
+  if (img.empty() || img.cols <= 0 || img.rows <= 0) {
     return "";
+  }
+  
+  // Validate input parameters
+  if (paletteSize <= 0 || paletteSize > 256) {
+    paletteSize = 256; // Fallback to safe value
   }
 
   cv::Mat rgb_img;
-  cv::cvtColor(img, rgb_img, cv::COLOR_BGR2RGB);
+  if (img.channels() == 3) {
+    cv::cvtColor(img, rgb_img, cv::COLOR_BGR2RGB);
+  } else if (img.channels() == 4) {
+    cv::cvtColor(img, rgb_img, cv::COLOR_BGRA2RGB);
+  } else if (img.channels() == 1) {
+    cv::cvtColor(img, rgb_img, cv::COLOR_GRAY2RGB);
+  } else {
+    return ""; // Unsupported format
+  }
+  
+  // Validate converted image
+  if (rgb_img.empty() || rgb_img.data == nullptr) {
+    return "";
+  }
 
   std::string sixel_output_string;
   sixel_output_string.reserve(1024 * 1024); // Pre-allocate :3
@@ -456,8 +474,8 @@ std::string Sakura::renderSixel(const cv::Mat &img, int paletteSize) const {
 
   if (sixel_dither_initialize(dither.get(), rgb_img.data, rgb_img.cols,
                               rgb_img.rows, SIXEL_PIXELFORMAT_RGB888,
-                              SIXEL_LARGE_NORM, SIXEL_REP_AVERAGE_COLORS,
-                              SIXEL_QUALITY_AUTO) != SIXEL_OK) {
+                              SIXEL_LARGE_NORM, SIXEL_REP_CENTER_BOX,
+                              SIXEL_QUALITY_HIGH) != SIXEL_OK) {
     return "";
   }
 
@@ -684,15 +702,19 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
     fps = 30.0; // Default fallback
   RenderOptions videoOptions = options;
 
-  double scale_factor = 0.95;
+  double scale_factor = 1.0; // Use full scale for pixel perfection
   if (options.fit == FitMode::COVER) {
     // For COVER, do not shrink: aim to fill the terminal fully
     scale_factor = 1.0;
+  } else if (options.fit == FitMode::CONTAIN) {
+    // For CONTAIN, keep full scale for best quality
+    scale_factor = 1.0;
   } else {
-    if (fps > 30.0)
-      scale_factor = 0.90;
-    if (fps > 50.0)
-      scale_factor = 0.85;
+    // For other modes, slight reduction only if very high FPS
+    if (fps > 60.0)
+      scale_factor = 0.95;
+    else
+      scale_factor = 1.0;
   }
 
   videoOptions.width = static_cast<int>(options.width * scale_factor);
@@ -777,13 +799,13 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
   std::mutex queue_mutex;
   std::condition_variable cv_not_empty, cv_not_full;
   const std::size_t max_queue_size =
-      static_cast<std::size_t>(std::max(1, options.queueSize));
+      static_cast<std::size_t>(std::max(32, options.queueSize * 2)); // Larger frame queue
 
   std::deque<SixelItem> sixel_queue;
   std::mutex sixel_queue_mutex;
   std::condition_variable cv_sixel_not_empty, cv_sixel_not_full;
   const std::size_t max_sixel_queue_size =
-      static_cast<std::size_t>(std::max(1, options.queueSize));
+      static_cast<std::size_t>(std::max(32, options.queueSize * 2)); // Larger sixel queue
 
   std::atomic<bool> reader_done{false};
   std::atomic<bool> encoder_done{false};
@@ -810,21 +832,51 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
         continue;
       }
       frame_accumulator -= 1.0;
-      const double scale_snapshot =
-          (options.fit == FitMode::COVER)
-              ? 1.0
-              : std::clamp(current_scale.load(std::memory_order_relaxed),
-                           options.minScaleFactor, options.maxScaleFactor);
+      
+      // Ensure frame is valid before processing
+      if (raw.empty() || raw.cols <= 0 || raw.rows <= 0) {
+        ++source_index;
+        continue;
+      }
+      
+      const double scale_snapshot = 1.0; // Always use full scale for pixel perfection
       const int out_w =
           std::max(1, static_cast<int>(base_out_w * scale_snapshot));
       const int out_h =
           std::max(1, static_cast<int>(base_out_h * scale_snapshot));
       const cv::Size dyn_size(out_w, out_h);
-      const int interpolation =
-          options.fastResize ? cv::INTER_NEAREST : cv::INTER_AREA;
+      const int interpolation = cv::INTER_CUBIC; // Higher quality interpolation
+      
+      // Ensure target size is valid
+      if (dyn_size.width <= 0 || dyn_size.height <= 0) {
+        ++source_index;
+        continue;
+      }
+      
       cv::resize(raw, resized_local, dyn_size, 0, 0, interpolation);
+      
+      // Ensure resized frame is valid and has proper data
+      if (resized_local.empty() || !resized_local.isContinuous() || 
+          resized_local.data == nullptr) {
+        ++source_index;
+        continue;
+      }
+      
+      // Additional safety check for frame integrity
+      if (resized_local.cols != dyn_size.width || resized_local.rows != dyn_size.height) {
+        ++source_index;
+        continue;
+      }
 
       FrameItem item{resized_local.clone(), read_index++};
+      
+      // Validate the cloned frame
+      if (item.frame.empty() || item.frame.data == nullptr) {
+        ++source_index;
+        continue;
+      }
+      
+      ++source_index;
       std::unique_lock<std::mutex> lk(queue_mutex);
       cv_not_full.wait(lk, [&] {
         return stop_pipeline.load(std::memory_order_relaxed) ||
@@ -845,7 +897,7 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
 
   std::vector<std::thread> encoder_threads;
   const int num_encoders =
-      std::max(1, static_cast<int>(std::thread::hardware_concurrency() / 2));
+      std::max(1, static_cast<int>(std::thread::hardware_concurrency() / 2)); // Conservative thread count
 
   for (int i = 0; i < num_encoders; ++i) {
     encoder_threads.emplace_back([&]() {
@@ -869,32 +921,51 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
           cv_not_full.notify_one();
         }
 
+        // Validate frame before encoding
+        if (item.frame.empty() || item.frame.data == nullptr || 
+            item.frame.cols <= 0 || item.frame.rows <= 0) {
+          continue; // Skip invalid frames
+        }
+
         const std::string sixel_data =
             renderSixel(item.frame, current_palette_size.load());
+
+        // Validate the encoded data
+        if (sixel_data.empty()) {
+          continue; // Skip corrupted frames
+        }
 
         SixelItem sixel_item{std::move(sixel_data), item.index,
                              item.frame.cols, item.frame.rows};
 
+        // Thread-safe frame reordering with better synchronization
         {
           std::unique_lock<std::mutex> lk(sixel_queue_mutex);
           sixel_map[item.index] = std::move(sixel_item);
-
-          // If this thread just produced the next frame in sequence,
-          // it's responsible for pushing it and any subsequent frames.
-          if (item.index == next_sixel_index_to_push) {
-            while (sixel_map.count(next_sixel_index_to_push)) {
-              cv_sixel_not_full.wait(lk, [&] {
-                return stop_pipeline.load(std::memory_order_relaxed) ||
-                       sixel_queue.size() < max_sixel_queue_size;
-              });
-              if (stop_pipeline.load(std::memory_order_relaxed))
-                break;
-
-              sixel_queue.push_back(
-                  std::move(sixel_map.at(next_sixel_index_to_push)));
-              sixel_map.erase(next_sixel_index_to_push);
-              next_sixel_index_to_push++;
+          
+          // Use a simpler, more reliable approach to prevent race conditions
+          int expected_index = next_sixel_index_to_push.load();
+          while (sixel_map.find(expected_index) != sixel_map.end()) {
+            // Wait for space in output queue if needed
+            cv_sixel_not_full.wait(lk, [&] {
+              return stop_pipeline.load(std::memory_order_relaxed) ||
+                     sixel_queue.size() < max_sixel_queue_size;
+            });
+            
+            if (stop_pipeline.load(std::memory_order_relaxed)) {
+              break;
+            }
+            
+            // Move frame to output queue
+            auto frame_iter = sixel_map.find(expected_index);
+            if (frame_iter != sixel_map.end()) {
+              sixel_queue.push_back(std::move(frame_iter->second));
+              sixel_map.erase(frame_iter);
+              expected_index++;
+              next_sixel_index_to_push.store(expected_index, std::memory_order_relaxed);
               cv_sixel_not_empty.notify_one();
+            } else {
+              break; // Frame not available, exit loop
             }
           }
         }
@@ -918,7 +989,7 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
       return encoder_done.load(std::memory_order_relaxed) ||
              sixel_queue.size() >=
                  static_cast<std::size_t>(
-                     std::max(0, options.prebufferFrames / 2));
+                     std::max(16, options.prebufferFrames)); // Better prebuffering
     });
   }
 
@@ -965,11 +1036,12 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
               .count() /
           frame_duration_ns.count();
 
-      if (sixel_queue.size() > 2) {
+      // Drop frames more conservatively to maintain quality
+      if (sixel_queue.size() > 4) {
         const int behind =
             static_cast<int>(target_frame_number - sixel_queue.front().index);
         int drop_budget =
-            std::min<int>(behind - 1, static_cast<int>(sixel_queue.size()) - 1);
+            std::min<int>(std::max(0, behind - 2), static_cast<int>(sixel_queue.size()) - 2);
         while (drop_budget-- > 0) {
           sixel_queue.pop_front();
           frames_dropped++;
@@ -983,25 +1055,14 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
       cv_sixel_not_full.notify_one();
     }
 
-    // Adaptive palette: reduce when behind, restore when caught up
-    if (options.adaptivePalette) {
-      const auto now = std::chrono::steady_clock::now();
-      const long long target_frame_number =
-          std::chrono::duration_cast<std::chrono::nanoseconds>(now - start_time)
-              .count() /
-          frame_duration_ns.count();
-      const int lag = static_cast<int>(target_frame_number - item.index);
-      if (lag > 2 &&
-          current_palette_size.load() > options.minPaletteSize) {
-        current_palette_size =
-            std::max(options.minPaletteSize, current_palette_size.load() / 2);
-      } else if (lag <= 1 &&
-                 current_palette_size.load() < options.maxPaletteSize) {
-        current_palette_size =
-            std::min(options.maxPaletteSize, current_palette_size.load() * 2);
-      }
+    // Validate frame data before display
+    if (item.sixel.empty() || item.width <= 0 || item.height <= 0) {
+      continue; // Skip corrupted frames
     }
 
+    // Disable adaptive palette for pixel perfection
+    // Keep consistent high quality throughout playback
+    
     // Clear screen if current frame is smaller than the previous to avoid
     // leftover pixels
     if (item.width < last_draw_w || item.height < last_draw_h) {
@@ -1022,43 +1083,18 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
     const auto now2 = std::chrono::steady_clock::now();
     if (next_frame_time > now2) {
       auto delta = next_frame_time - now2;
-      if (delta > std::chrono::milliseconds(1)) {
-        std::this_thread::sleep_for(delta - std::chrono::milliseconds(1));
+      // More precise timing for smoother playback
+      if (delta > std::chrono::microseconds(500)) {
+        std::this_thread::sleep_for(delta - std::chrono::microseconds(500));
       }
+      // Busy wait for precise timing
       while (std::chrono::steady_clock::now() < next_frame_time) {
         std::this_thread::yield();
       }
     }
 
-    // Adaptive scale: adjust output scale based on recent drop ratio
-    if (options.adaptiveScale && options.fit != FitMode::COVER &&
-        window_total >= adjust_interval_frames) {
-      const double recent_drop =
-          window_total > 0
-              ? (static_cast<double>(window_dropped) / window_total)
-              : 0.0;
-      if (recent_drop > 0.30) {
-        const double new_scale = std::max(
-            options.minScaleFactor,
-            current_scale.load(std::memory_order_relaxed) - options.scaleStep);
-        current_scale.store(new_scale, std::memory_order_relaxed);
-        stable_intervals = 0;
-      } else if (recent_drop < 0.10) {
-        stable_intervals++;
-        if (stable_intervals >= 2) {
-          const double new_scale =
-              std::min(options.maxScaleFactor,
-                       current_scale.load(std::memory_order_relaxed) +
-                           options.scaleStep);
-          current_scale.store(new_scale, std::memory_order_relaxed);
-          stable_intervals = 0;
-        }
-      } else {
-        stable_intervals = 0;
-      }
-      window_total = 0;
-      window_dropped = 0;
-    }
+    // Disable adaptive scale for pixel perfection
+    // Keep consistent size throughout playback for best quality
   }
 
   stop_pipeline = true;

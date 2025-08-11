@@ -104,33 +104,24 @@ bool process_local_video(std::string path) {
   bool stat = false;
   auto [termPixW, termPixH] = getTerminalPixelSize();
 
-  // For video, we'll let the sakura library handle sizing internally
+  // Optimized settings for pixel perfection and minimal frame drops
   Sakura::RenderOptions options;
   options.mode = Sakura::SIXEL;
   options.dither = Sakura::FLOYD_STEINBERG;
   options.terminalAspectRatio = 1.0;
   options.width = termPixW;
   options.height = termPixH;
-  options.paletteSize = 256;
-  options.queueSize = 32;
-  options.prebufferFrames = 8;
-  options.staticPalette = false;
-  options.fastResize = false;
-  options.targetFps = 30.0; // cap to 30 for smoother playback on terminals
-  options.adaptivePalette =
-      false; // dynamically shrink/restore palette when behind
-  options.minPaletteSize = 64;
-  options.maxPaletteSize = 256;
-  options.adaptiveScale = false; // can enable later if needed
-  options.minScaleFactor = 0.85;
-  options.maxScaleFactor = 1.00;
-  options.scaleStep = 0.05;
-  options.hwAccelPipe = false;
-  options.fastResize = false;
-  options.tileUpdates = false;
-  options.tileWidth = 128;
-  options.tileHeight = 64;
-  options.tileDiffThreshold = 5.0;
+  options.paletteSize = 256; // Maximum colors for best quality
+  options.queueSize = 64; // Larger queues for stability
+  options.prebufferFrames = 32; // More prebuffering for smoothness
+  options.staticPalette = true; // Consistent palette for quality
+  options.fastResize = false; // High quality resizing
+  options.targetFps = 0.0; // Follow source FPS for authenticity
+  options.adaptivePalette = false; // No quality compromises
+  options.adaptiveScale = false; // No size compromises
+  options.hwAccelPipe = false; // Stable software decoding
+  options.tileUpdates = false; // Full frame updates for quality
+  options.fit = Sakura::FitMode::COVER; // Maintain aspect ratio
 
   stat = sakura.renderVideoFromFile(path, options);
   return stat;
