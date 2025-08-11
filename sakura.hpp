@@ -11,6 +11,7 @@ public:
   enum CharStyle { SIMPLE, DETAILED, BLOCKS };
   enum RenderMode { EXACT, ASCII_COLOR, ASCII_GRAY, SIXEL };
   enum DitherMode { NONE, FLOYD_STEINBERG };
+  enum FitMode { STRETCH, COVER, CONTAIN };
 
   struct RenderOptions {
     int width = 0;
@@ -23,6 +24,11 @@ public:
     double contrast = 1.2;
     double brightness = 0.0;
     double terminalAspectRatio = 1.0;
+    int queueSize = 16;
+    int prebufferFrames = 4;
+    bool staticPalette = false;
+    FitMode fit = COVER;
+    bool fastResize = false; // Use INTER_NEAREST for video pre-scaling
   };
 
   bool renderFromUrl(std::string_view url, const RenderOptions &options) const;

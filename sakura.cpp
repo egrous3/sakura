@@ -2,14 +2,17 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cpr/cpr.h>
 #include <cstdlib>
 #include <ctime>
+#include <deque>
 #include <fstream>
 #include <future>
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <sixel.h>
 #include <sstream>
 #include <string_view>
@@ -195,7 +198,6 @@ std::vector<std::string> Sakura::renderExact(const cv::Mat &resized,
                                          ? resized.at<cv::Vec3b>(2 * k + 1, j)
                                          : top_pixel;
 
-      // Use string stream for better performance with repeated formatting
       std::ostringstream oss;
       oss << "\x1b[48;2;" << static_cast<int>(bottom_pixel[2]) << ';'
           << static_cast<int>(bottom_pixel[1]) << ';'
@@ -559,20 +561,21 @@ bool Sakura::renderGifFromUrl(std::string_view gifUrl,
 
   const auto frame_duration_ns =
       std::chrono::nanoseconds(static_cast<long long>(1000000000.0 / fps));
-  const auto start_time = std::chrono::high_resolution_clock::now();
+  const auto start_time = std::chrono::steady_clock::now();
 
   int frame_number = 0;
   int frames_dropped = 0;
 
   std::cout.setf(std::ios::unitbuf); // Unbuffered output
   std::cout << "\033[2J\033[?25l" << std::flush;
+  std::cout.setf(std::ios::unitbuf);
 
   cv::Mat frame, resized_frame;
   const cv::Size target_size(gifOptions.width, gifOptions.height);
 
   while (cap.read(frame)) {
     // time syncing
-    const auto frame_start = std::chrono::high_resolution_clock::now();
+    const auto frame_start = std::chrono::steady_clock::now();
     const auto elapsed_ns =
         std::chrono::duration_cast<std::chrono::nanoseconds>(frame_start -
                                                              start_time);
@@ -597,22 +600,12 @@ bool Sakura::renderGifFromUrl(std::string_view gifUrl,
 
     frame_number++;
 
-    const auto next_frame_time = start_time + frame_number * frame_duration_ns;
-    const auto now = std::chrono::high_resolution_clock::now();
+    const auto next_frame_time =
+        start_time + (frame_duration_ns * frame_number);
+    const auto now = std::chrono::steady_clock::now();
 
     if (next_frame_time > now) {
-      const auto sleep_duration = next_frame_time - now;
-      if (sleep_duration > std::chrono::milliseconds(2)) {
-        std::this_thread::sleep_for(sleep_duration -
-                                    std::chrono::milliseconds(1));
-        while (std::chrono::high_resolution_clock::now() < next_frame_time) {
-          std::this_thread::yield();
-        }
-      } else {
-        while (std::chrono::high_resolution_clock::now() < next_frame_time) {
-          std::this_thread::yield();
-        }
-      }
+      std::this_thread::sleep_until(next_frame_time);
     }
   }
 
@@ -673,10 +666,46 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
   videoOptions.height = static_cast<int>(options.height * scale_factor);
 
   const double videoAspect = static_cast<double>(video_width) / video_height;
-  if (videoAspect > 1.0) {
-    videoOptions.height = static_cast<int>(videoOptions.width / videoAspect);
-  } else {
-    videoOptions.width = static_cast<int>(videoOptions.height * videoAspect);
+  const double termAspect =
+      static_cast<double>(videoOptions.width) / videoOptions.height;
+
+  switch (options.fit) {
+  case FitMode::STRETCH: {
+    // Keep videoOptions as-it is (stretched)
+    break;
+  }
+  case FitMode::COVER: {
+    // Fill entire terminal, may crop in one dimension
+    if (videoAspect > termAspect) {
+      // Video wider; increase height to cover
+      videoOptions.height = static_cast<int>(videoOptions.width / videoAspect);
+      // Then scale to ensure height covers terminal
+      if (videoOptions.height < options.height) {
+        videoOptions.height = options.height;
+        videoOptions.width =
+            static_cast<int>(videoOptions.height * videoAspect);
+      }
+    } else {
+      // Video taller; increase width to cover
+      videoOptions.width = static_cast<int>(videoOptions.height * videoAspect);
+      if (videoOptions.width < options.width) {
+        videoOptions.width = options.width;
+        videoOptions.height =
+            static_cast<int>(videoOptions.width / videoAspect);
+      }
+    }
+    break;
+  }
+  case FitMode::CONTAIN:
+  default: {
+    // Fit inside terminal bounds; no cropping
+    if (videoAspect > termAspect) {
+      videoOptions.height = static_cast<int>(videoOptions.width / videoAspect);
+    } else {
+      videoOptions.width = static_cast<int>(videoOptions.height * videoAspect);
+    }
+    break;
+  }
   }
 
   cv::Mat frame, resized_frame;
@@ -684,79 +713,156 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
 
   const auto frame_duration_ns =
       std::chrono::nanoseconds(static_cast<long long>(1000000000.0 / fps));
-  const auto start_time = std::chrono::high_resolution_clock::now();
 
   int frame_number = 0;
   int frames_dropped = 0;
   int frames_rendered = 0;
 
-  std::cout.setf(std::ios::unitbuf);
   std::cout << "\033[2J\033[?25l" << std::flush;
 
-  std::atomic<bool> audio_started{false};
-  auto audio_future = std::async(std::launch::async, [&]() {
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    audio_started = true;
-    const std::string audio_cmd = "ffplay -nodisp -autoexit \"" +
-                                  std::string(videoPath) + "\" 2>/dev/null";
-    std::system(audio_cmd.c_str());
+  // Pre-decode and resize frames on a background thread into a bounded queue
+  struct FrameItem {
+    cv::Mat frame;
+    int index = 0;
+  };
+
+  std::deque<FrameItem> frame_queue;
+  std::mutex queue_mutex;
+  std::condition_variable cv_not_empty, cv_not_full;
+  const std::size_t max_queue_size =
+      static_cast<std::size_t>(std::max(1, options.queueSize));
+  std::atomic<bool> reader_done{false};
+  std::atomic<bool> stop_reader{false};
+
+  std::thread reader_thread([&]() {
+    cv::Mat raw, resized_local;
+    int read_index = 0;
+    while (!stop_reader.load(std::memory_order_relaxed)) {
+      if (!cap.read(raw)) {
+        break;
+      }
+      const int interpolation =
+          options.fastResize ? cv::INTER_NEAREST : cv::INTER_AREA;
+      cv::resize(raw, resized_local, target_size, 0, 0, interpolation);
+
+      FrameItem item{resized_local.clone(), read_index++};
+      std::unique_lock<std::mutex> lk(queue_mutex);
+      cv_not_full.wait(lk, [&] {
+        return stop_reader.load(std::memory_order_relaxed) ||
+               frame_queue.size() < max_queue_size;
+      });
+      if (stop_reader.load(std::memory_order_relaxed)) {
+        break;
+      }
+      frame_queue.emplace_back(std::move(item));
+      lk.unlock();
+      cv_not_empty.notify_one();
+    }
+    reader_done = true;
+    cv_not_empty.notify_all();
   });
 
   std::string sixel_data;
   sixel_data.reserve(1024 * 1024);
+  {
+    std::unique_lock<std::mutex> lk(queue_mutex);
+    cv_not_empty.wait(lk, [&] {
+      return reader_done.load(std::memory_order_relaxed) ||
+             frame_queue.size() >=
+                 static_cast<std::size_t>(std::max(0, options.prebufferFrames));
+    });
+  }
 
-  while (cap.read(frame)) {
-    const auto frame_start = std::chrono::high_resolution_clock::now();
-    const auto elapsed_ns =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(frame_start -
-                                                             start_time);
+  // using low-latency flags and without decoding video
+  std::atomic<bool> audio_running{true};
+  auto audio_future = std::async(std::launch::async, [&]() {
+    const std::string audio_cmd = "ffplay -nodisp -autoexit -vn -nostats "
+                                  "-loglevel quiet -fflags +nobuffer "
+                                  "-flags low_delay \"" +
+                                  std::string(videoPath) + "\" 2>/dev/null";
+    std::system(audio_cmd.c_str());
+    audio_running = false;
+  });
 
-    const long long target_frame_number =
-        elapsed_ns.count() / frame_duration_ns.count();
+  const auto start_time = std::chrono::steady_clock::now();
 
-    if (frame_number < target_frame_number) {
-      const int frames_behind =
-          static_cast<int>(target_frame_number - frame_number);
+  // Playback loop
+  while (true) {
+    FrameItem item;
+    {
+      std::unique_lock<std::mutex> lk(queue_mutex);
+      if (frame_queue.empty()) {
+        if (reader_done.load(std::memory_order_relaxed)) {
+          break;
+        }
+        cv_not_empty.wait_for(lk, std::chrono::milliseconds(2));
+        if (frame_queue.empty()) {
+          continue;
+        }
+      }
 
-      if (frames_behind > 2) {
-        while (frame_number < target_frame_number - 1) {
-          if (!cap.read(frame))
-            goto end_playback;
-          frame_number++;
+      // Drop frames aggressively if we are behind schedule
+      const auto now = std::chrono::steady_clock::now();
+      const long long target_frame_number =
+          std::chrono::duration_cast<std::chrono::nanoseconds>(now - start_time)
+              .count() /
+          frame_duration_ns.count();
+
+      if (frame_queue.size() > 2) {
+        const int behind =
+            static_cast<int>(target_frame_number - frame_queue.front().index);
+        int drop_budget =
+            std::min<int>(behind - 1, static_cast<int>(frame_queue.size()) - 1);
+        while (drop_budget-- > 0) {
+          frame_queue.pop_front();
           frames_dropped++;
         }
       }
+
+      item = std::move(frame_queue.front());
+      frame_queue.pop_front();
+      lk.unlock();
+      cv_not_full.notify_one();
     }
 
-    frame_number++;
+    sixel_data = renderSixel(item.frame, videoOptions.paletteSize);
 
-    cv::resize(frame, resized_frame, target_size, 0, 0, cv::INTER_NEAREST);
-
-    sixel_data = renderSixel(resized_frame, videoOptions.paletteSize);
-
-    std::cout << "\033[H" << sixel_data;
+    std::cout << "\033[H";
+    std::cout.write(sixel_data.data(),
+                    static_cast<std::streamsize>(sixel_data.size()));
+    std::cout.flush();
     frames_rendered++;
+    frame_number = item.index + 1;
 
-    const auto next_frame_time = start_time + frame_number * frame_duration_ns;
-    const auto now = std::chrono::high_resolution_clock::now();
-
-    if (next_frame_time > now) {
-      const auto sleep_duration = next_frame_time - now;
-      if (sleep_duration > std::chrono::milliseconds(1)) {
-        std::this_thread::sleep_for(sleep_duration);
+    const auto next_frame_time =
+        start_time + (frame_duration_ns * frame_number);
+    const auto now2 = std::chrono::steady_clock::now();
+    if (next_frame_time > now2) {
+      auto delta = next_frame_time - now2;
+      if (delta > std::chrono::milliseconds(1)) {
+        std::this_thread::sleep_for(delta - std::chrono::milliseconds(1));
+      }
+      while (std::chrono::steady_clock::now() < next_frame_time) {
+        std::this_thread::yield();
       }
     }
   }
 
-end_playback:
+  stop_reader = true;
+  cv_not_full.notify_all();
+  cv_not_empty.notify_all();
+  if (reader_thread.joinable())
+    reader_thread.join();
 
   std::cout << "\033[?25h" << std::flush;
   std::cout.unsetf(std::ios::unitbuf);
   cap.release();
-  std::system("pkill -f ffplay 2>/dev/null");
+  std::system("pkill -f 'ffplay -nodisp' 2>/dev/null");
 
-  const double drop_rate = (frames_dropped * 100.0) / frame_number;
-  const double render_rate = (frames_rendered * 100.0) / frame_number;
+  const double drop_rate =
+      frame_number > 0 ? (frames_dropped * 100.0) / frame_number : 0.0;
+  const double render_rate =
+      frame_number > 0 ? (frames_rendered * 100.0) / frame_number : 0.0;
   std::cout << "\nPlayback completed. Total: " << frame_number
             << ", Rendered: " << frames_rendered << " (" << std::fixed
             << std::setprecision(1) << render_rate << "%)"

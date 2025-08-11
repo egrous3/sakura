@@ -7,7 +7,7 @@ A high-performance minimal (~1k lines of code) terminal-based multimedia library
 - [Features](#features)
 - [Installation](#installation)
 - [Usage](#usage)
-- [Technical Implementation](#technical-implementation)
+ - [Technical Implementation](#technical-implementation)
 - [Performance Optimizations](#performance-optimizations)
 - [SIXEL Terminal Support](#sixel-terminal-support)
 - [API Documentation](#api-documentation)
@@ -20,9 +20,9 @@ A high-performance minimal (~1k lines of code) terminal-based multimedia library
 - **SIXEL Graphics Rendering**: Pixel-perfect graphics directly in the terminal using libsixel
 - **Multi-format Support**: Images (JPG, PNG, BMP), animated GIFs, and videos (MP4, AVI, MOV, MKV)
 - **Synchronized Audio**: Real-time audio playback with video using ffplay
-- **Adaptive Scaling**: Automatic sizing to terminal dimensions with aspect ratio preservation
+ - **Adaptive Scaling / Fit Modes**: Fill the terminal using fit modes (contain, cover, stretch)
 - **URL Download**: Direct streaming from web URLs
-- **Performance Optimization**: Advanced frame timing and skipping for smooth playback
+- **Performance Optimization**: Predecode queue, advanced frame timing and adaptive skipping for smooth playback
 
 ### Rendering Modes
 1. **SIXEL Mode**: High-quality graphics with full color palette
@@ -229,10 +229,10 @@ echo -e "4\nmedia/your_video.mp4" | ./sakura
 
 ### SIXEL Graphics Pipeline
 
-1. **Image Processing**: OpenCV handles decoding and format conversion
-2. **Color Quantization**: K-means clustering for optimal palette generation
+1. **Image/Video Decode**: OpenCV handles decoding
+2. **Pre-scaling**: Reader thread pre-scales frames (INTER_NEAREST when `fastResize=true`, otherwise INTER_AREA)
 3. **SIXEL Encoding**: libsixel converts RGB data to SIXEL format
-4. **Terminal Output**: Direct SIXEL sequence transmission
+4. **Terminal Output**: Direct SIXEL sequence transmission with precise pacing
 
 ```cpp
 // Core rendering pipeline
@@ -248,8 +248,8 @@ The player implements sophisticated timing control:
 
 ```cpp
 // High-precision frame timing
-auto frame_duration_ns = static_cast<long long>(1000000000.0 / fps);
-auto target_frame_time = start_time + std::chrono::nanoseconds(frame_number * frame_duration_ns);
+auto frame_duration_ns = std::chrono::nanoseconds(static_cast<long long>(1000000000.0 / fps));
+auto target_frame_time = start_time + (frame_duration_ns * frame_number);
 
 // Smart frame skipping
 if (frame_number < target_frame_number) {
@@ -264,38 +264,38 @@ if (frame_number < target_frame_number) {
 
 ```cpp
 // Video processing flow
-cv::VideoCapture cap(video_path);
-while (cap.read(frame)) {
-    cv::resize(frame, resized, target_size, 0, 0, cv::INTER_NEAREST);
-    std::string sixel_data = renderSixel(resized, palette_size);
-    std::cout << "\033[H" << sixel_data;  // Clear and render
-    precise_sleep_until(next_frame_time);
-}
+// Reader thread (pre-decode + pre-scale into a bounded queue)
+// Main thread: encode to SIXEL and pace using steady_clock
 ```
 
 ## Performance Optimizations
 
 ### Frame Timing Optimizations
 
-- **Adaptive Frame Skipping**: Automatically drops frames when behind schedule
-- **High-Resolution Timing**: Nanosecond precision using `std::chrono::high_resolution_clock`
-- **Buffered I/O**: Optimized terminal output with buffering control
+- **Predecode Queue**: Background thread decodes and scales frames into a bounded queue
+- **Adaptive Frame Skipping**: Drops multiple stale frames at once when far behind
+- **Steady Clock Pacing**: `std::chrono::steady_clock` with sleep-until pacing
+- **Buffered I/O**: Unit-buffered output plus explicit flush to avoid terminal buffering stalls
 - **Memory Pre-allocation**: Reserved string buffers to avoid reallocations
 
-### Video Quality Settings
+### Video Quality / Throughput Settings
 
 ```cpp
 // Adaptive scaling based on FPS
-double scale_factor = 0.95;               // Default 95% of terminal
-if (fps > 30.0) scale_factor = 0.90;      // 90% for high FPS
-if (fps > 50.0) scale_factor = 0.85;      // 85% for very high FPS
+// Fit modes:
+// - CONTAIN: keep aspect within terminal bounds (no crop)
+// - COVER: fill entire terminal (may crop)
+// - STRETCH: fill width and height (distorts aspect)
+
+// Fast pre-scaling:
+// options.fastResize = true; // use INTER_NEAREST for maximum FPS
 ```
 
 ### SIXEL Optimization
 
-- **Palette Size**: Configurable color palette (default: 256 colors)
-- **Quality Settings**: Balanced quality/performance ratio
-- **Interpolation**: Fast nearest-neighbor resizing for real-time playback
+- **Palette Size**: Configurable color palette (typically 256)
+- **Static Palette (optional)**: Reuse first-frame palette for more stable colors and less overhead
+- **Interpolation**: INTER_NEAREST for speed (when `fastResize=true`), INTER_AREA for quality
 
 ## SIXEL Terminal Support
 
@@ -359,16 +359,21 @@ public:
 
 ```cpp
 struct RenderOptions {
-    int width = 0;                    // Target width (0 = auto)
-    int height = 0;                   // Target height (0 = auto)  
-    RenderMode mode = SIXEL;          // Rendering mode
-    int paletteSize = 256;            // SIXEL palette size
-    bool aspectRatio = true;          // Preserve aspect ratio
-    double contrast = 1.0;            // Contrast adjustment
-    double brightness = 0.0;          // Brightness adjustment
-    CharStyle style = DETAILED;       // ASCII character style
-    DitherMode dither = NONE;         // Dithering mode
-    double terminalAspectRatio = 0.5; // Terminal character aspect
+    int width = 0;
+    int height = 0;
+    int paletteSize = 256;
+    CharStyle style = SIMPLE;
+    RenderMode mode = EXACT;
+    DitherMode dither = NONE;
+    bool aspectRatio = true;
+    double contrast = 1.2;
+    double brightness = 0.0;
+    double terminalAspectRatio = 1.0;
+    int queueSize = 16;          // size of predecode queue
+    int prebufferFrames = 4;     // frames to prebuffer before audio
+    bool staticPalette = false;  // reuse first palette for all frames
+    FitMode fit = COVER;         // STRETCH, COVER, CONTAIN
+    bool fastResize = false;     // use INTER_NEAREST when true
 };
 ```
 
@@ -376,10 +381,16 @@ struct RenderOptions {
 
 ```cpp
 enum RenderMode {
-    SIXEL,        // High-quality SIXEL graphics
-    ASCII_COLOR,  // Colored ASCII blocks
-    ASCII_GRAY,   // Grayscale ASCII characters
-    EXACT         // True-color Unicode blocks
+    EXACT,
+    ASCII_COLOR,
+    ASCII_GRAY,
+    SIXEL
+};
+
+enum FitMode {
+    STRETCH,
+    COVER,
+    CONTAIN
 };
 ```
 
@@ -393,12 +404,15 @@ enum RenderMode {
 int main() {
     Sakura renderer;
     RenderOptions options;
-    
-    // Configure for high quality
     options.mode = SIXEL;
     options.paletteSize = 256;
     options.width = 800;
     options.height = 600;
+    options.queueSize = 32;
+    options.prebufferFrames = 8;
+    options.staticPalette = true;
+    options.fit = COVER;
+    options.fastResize = true; // maximize FPS
     
     // Render image
     renderer.renderFromUrl("https://example.com/image.jpg", options);

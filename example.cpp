@@ -7,7 +7,6 @@
 #include <unistd.h>
 #include <utility>
 
-// Helper to get terminal pixel size (returns {width, height} in pixels)
 std::pair<int, int> getTerminalPixelSize() {
   struct winsize w;
   if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0 && w.ws_xpixel > 0 &&
@@ -18,7 +17,6 @@ std::pair<int, int> getTerminalPixelSize() {
   return {1920, 1080};
 }
 
-// Helper to calculate best-fit dimensions for content
 std::pair<int, int> calculateBestFitSize(int contentWidth, int contentHeight,
                                          int termWidth, int termHeight) {
   double contentAspect = static_cast<double>(contentWidth) / contentHeight;
@@ -55,7 +53,7 @@ bool process_image(std::string url) {
     return 1;
   }
 
-  // Calculate proper dimensions for this image
+  // calculate proper dimensions for this image
   auto [outw, outh] =
       calculateBestFitSize(img.cols, img.rows, termPixW, termPixH);
 
@@ -75,7 +73,6 @@ bool process_gif(std::string url) {
   auto [termPixW, termPixH] = getTerminalPixelSize();
 
   // For GIF, we'll let the sakura library handle sizing internally
-  // but still set reasonable defaults
   Sakura::RenderOptions options;
   options.mode = Sakura::SIXEL;
   options.dither = Sakura::FLOYD_STEINBERG;
@@ -92,7 +89,6 @@ bool process_video(std::string url) {
   auto [termPixW, termPixH] = getTerminalPixelSize();
 
   // For video, we'll let the sakura library handle sizing internally
-  // but still set reasonable defaults
   Sakura::RenderOptions options;
   options.mode = Sakura::SIXEL;
   options.dither = Sakura::FLOYD_STEINBERG;
@@ -109,13 +105,17 @@ bool process_local_video(std::string path) {
   auto [termPixW, termPixH] = getTerminalPixelSize();
 
   // For video, we'll let the sakura library handle sizing internally
-  // but still set reasonable defaults
   Sakura::RenderOptions options;
   options.mode = Sakura::SIXEL;
   options.dither = Sakura::FLOYD_STEINBERG;
   options.terminalAspectRatio = 1.0;
   options.width = termPixW;
   options.height = termPixH;
+  options.paletteSize = 256;
+  options.queueSize = 48;
+  options.prebufferFrames = 12;
+  options.staticPalette = true;
+  options.fastResize = true;
 
   stat = sakura.renderVideoFromFile(path, options);
   return stat;
