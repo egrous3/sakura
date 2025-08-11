@@ -12,6 +12,7 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <cstdio>
 #include <mutex>
 #include <sixel.h>
 #include <sstream>
@@ -639,10 +640,37 @@ bool Sakura::renderVideoFromUrl(std::string_view videoUrl,
 
 bool Sakura::renderVideoFromFile(std::string_view videoPath,
                                  const RenderOptions &options) const {
-  cv::VideoCapture cap{std::string(videoPath)};
-  if (!cap.isOpened()) {
-    std::cerr << "Failed to open video: " << videoPath << std::endl;
-    return false;
+  cv::VideoCapture cap;
+  if (options.hwAccelPipe) {
+    const auto [termW, termH] = getTerminalSize();
+    const int outW = std::max(1, options.width > 0 ? options.width : termW);
+    const int outH = std::max(1, options.height > 0 ? options.height : termH);
+    // Use popen to read rawvideo directly if OpenCV backend cannot open named pipe
+    std::ostringstream oss;
+    oss << "ffmpeg -hide_banner -nostats -loglevel error -hwaccel auto -i "
+        << '"' << videoPath << '"'
+        << " -vf scale=" << outW << ":" << outH
+        << ":flags=fast_bilinear -pix_fmt bgr24 -f rawvideo -";
+    const std::string cmd = oss.str();
+    FILE *pipe = popen(cmd.c_str(), "r");
+    if (!pipe) {
+      std::cerr << "Failed to spawn ffmpeg pipe for hw decode" << std::endl;
+      return false;
+    }
+    // Wrap FILE* with OpenCV using CAP_IMAGES and a custom buffer via cv::VideoCapture::open with filename "-"
+    // Fallback: if this fails, show message and return
+    if (!cap.open(cmd, cv::CAP_FFMPEG)) {
+      std::cerr << "VIDEOIO(FFMPEG) couldn't open pipe by name; using stdio may be needed" << std::endl;
+      pclose(pipe);
+      return false;
+    }
+    pclose(pipe);
+  } else {
+    cap.open(std::string(videoPath));
+    if (!cap.isOpened()) {
+      std::cerr << "Failed to open video: " << videoPath << std::endl;
+      return false;
+    }
   }
 
   // video properties

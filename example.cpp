@@ -125,6 +125,8 @@ bool process_local_video(std::string path) {
   options.minScaleFactor = 0.85;
   options.maxScaleFactor = 1.00;
   options.scaleStep = 0.05;
+  options.hwAccelPipe = true;
+  options.fastResize = true;
 
   stat = sakura.renderVideoFromFile(path, options);
   return stat;

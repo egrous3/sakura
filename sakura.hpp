@@ -39,6 +39,12 @@ public:
     double minScaleFactor = 0.80; // 80% of computed size
     double maxScaleFactor = 1.00; // up to full size
     double scaleStep = 0.05;      // adjust step per window
+    // Hardware-accelerated decode and tiled updates
+    bool hwAccelPipe = false;     // use ffmpeg pipe with -hwaccel auto
+    bool tileUpdates = false;     // send only changed tiles each frame
+    int tileWidth = 128;          // tile width in pixels
+    int tileHeight = 64;          // tile height in pixels
+    double tileDiffThreshold = 6.0; // average abs diff per channel to trigger update
   };
 
   bool renderFromUrl(std::string_view url, const RenderOptions &options) const;
