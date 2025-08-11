@@ -112,21 +112,25 @@ bool process_local_video(std::string path) {
   options.width = termPixW;
   options.height = termPixH;
   options.paletteSize = 256;
-  options.queueSize = 48;
-  options.prebufferFrames = 16;
-  options.staticPalette = true;
-  options.fastResize = true;
+  options.queueSize = 64;
+  options.prebufferFrames = 32;
+  options.staticPalette = false;
+  options.fastResize = false;
   options.targetFps = 30.0; // cap to 30 for smoother playback on terminals
   options.adaptivePalette =
-      true; // dynamically shrink/restore palette when behind
+      false; // dynamically shrink/restore palette when behind
   options.minPaletteSize = 64;
   options.maxPaletteSize = 256;
-  options.adaptiveScale = true; // can enable later if needed
+  options.adaptiveScale = false; // can enable later if needed
   options.minScaleFactor = 0.85;
   options.maxScaleFactor = 1.00;
   options.scaleStep = 0.05;
-  options.hwAccelPipe = true;
-  options.fastResize = true;
+  options.hwAccelPipe = false;
+  options.fastResize = false;
+  options.tileUpdates = true;
+  options.tileWidth = 128;
+  options.tileHeight = 64;
+  options.tileDiffThreshold = 5.0;
 
   stat = sakura.renderVideoFromFile(path, options);
   return stat;
