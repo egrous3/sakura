@@ -799,13 +799,13 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
   std::mutex queue_mutex;
   std::condition_variable cv_not_empty, cv_not_full;
   const std::size_t max_queue_size =
-      static_cast<std::size_t>(std::max(32, options.queueSize * 2)); // Larger frame queue
+      static_cast<std::size_t>(std::max(16, options.queueSize)); // Smaller frame queue to reduce lag
 
   std::deque<SixelItem> sixel_queue;
   std::mutex sixel_queue_mutex;
   std::condition_variable cv_sixel_not_empty, cv_sixel_not_full;
   const std::size_t max_sixel_queue_size =
-      static_cast<std::size_t>(std::max(32, options.queueSize * 2)); // Larger sixel queue
+      static_cast<std::size_t>(std::max(16, options.queueSize)); // Smaller sixel queue
 
   std::atomic<bool> reader_done{false};
   std::atomic<bool> encoder_done{false};
@@ -938,19 +938,28 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
         SixelItem sixel_item{std::move(sixel_data), item.index,
                              item.frame.cols, item.frame.rows};
 
-        // Thread-safe frame reordering with better synchronization
+        // Optimized thread-safe frame reordering with minimal lock time
+        {
+          std::lock_guard<std::mutex> lk(sixel_queue_mutex);
+          sixel_map[item.index] = std::move(sixel_item);
+        }
+        
+        // Process sequential frames in a separate, faster critical section
         {
           std::unique_lock<std::mutex> lk(sixel_queue_mutex);
-          sixel_map[item.index] = std::move(sixel_item);
-          
-          // Use a simpler, more reliable approach to prevent race conditions
           int expected_index = next_sixel_index_to_push.load();
-          while (sixel_map.find(expected_index) != sixel_map.end()) {
-            // Wait for space in output queue if needed
-            cv_sixel_not_full.wait(lk, [&] {
-              return stop_pipeline.load(std::memory_order_relaxed) ||
-                     sixel_queue.size() < max_sixel_queue_size;
-            });
+          
+          // Only process a few frames at a time to prevent lock starvation
+          int processed_count = 0;
+          const int max_batch_size = 3;
+          
+          while (processed_count < max_batch_size && 
+                 sixel_map.find(expected_index) != sixel_map.end()) {
+            
+            // Non-blocking check for space - if full, exit immediately
+            if (sixel_queue.size() >= max_sixel_queue_size) {
+              break;
+            }
             
             if (stop_pipeline.load(std::memory_order_relaxed)) {
               break;
@@ -962,11 +971,15 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
               sixel_queue.push_back(std::move(frame_iter->second));
               sixel_map.erase(frame_iter);
               expected_index++;
-              next_sixel_index_to_push.store(expected_index, std::memory_order_relaxed);
-              cv_sixel_not_empty.notify_one();
+              processed_count++;
             } else {
-              break; // Frame not available, exit loop
+              break;
             }
+          }
+          
+          if (processed_count > 0) {
+            next_sixel_index_to_push.store(expected_index, std::memory_order_relaxed);
+            cv_sixel_not_empty.notify_all(); // Wake up display thread
           }
         }
       }
@@ -989,7 +1002,7 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
       return encoder_done.load(std::memory_order_relaxed) ||
              sixel_queue.size() >=
                  static_cast<std::size_t>(
-                     std::max(16, options.prebufferFrames)); // Better prebuffering
+                     std::max(4, options.prebufferFrames / 4)); // Minimal prebuffering to reduce lag
     });
   }
 
@@ -1019,30 +1032,33 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
     SixelItem item;
     {
       std::unique_lock<std::mutex> lk(sixel_queue_mutex);
+      
+      // Use shorter timeout to prevent thread starvation
+      cv_sixel_not_empty.wait_for(lk, std::chrono::milliseconds(1), [&] {
+        return !sixel_queue.empty() || encoder_done.load(std::memory_order_relaxed);
+      });
+      
       if (sixel_queue.empty()) {
         if (encoder_done.load(std::memory_order_relaxed)) {
           break;
         }
-        cv_sixel_not_empty.wait_for(lk, std::chrono::milliseconds(2));
-        if (sixel_queue.empty()) {
-          continue;
-        }
+        continue; // Try again quickly
       }
 
-      // Drop frames aggressively if we are behind schedule
+      // More aggressive but smarter frame dropping for responsiveness
       const auto now = std::chrono::steady_clock::now();
       const long long target_frame_number =
           std::chrono::duration_cast<std::chrono::nanoseconds>(now - start_time)
               .count() /
           frame_duration_ns.count();
 
-      // Drop frames more conservatively to maintain quality
-      if (sixel_queue.size() > 4) {
+      // Drop frames more aggressively to prevent lag buildup
+      if (sixel_queue.size() > 3) {
         const int behind =
             static_cast<int>(target_frame_number - sixel_queue.front().index);
         int drop_budget =
-            std::min<int>(std::max(0, behind - 2), static_cast<int>(sixel_queue.size()) - 2);
-        while (drop_budget-- > 0) {
+            std::min<int>(std::max(0, behind - 1), static_cast<int>(sixel_queue.size()) - 1);
+        while (drop_budget-- > 0 && sixel_queue.size() > 1) {
           sixel_queue.pop_front();
           frames_dropped++;
           window_dropped++;
@@ -1051,9 +1067,9 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
 
       item = std::move(sixel_queue.front());
       sixel_queue.pop_front();
-      lk.unlock();
-      cv_sixel_not_full.notify_one();
+      // Don't hold lock while notifying
     }
+    cv_sixel_not_full.notify_one();
 
     // Validate frame data before display
     if (item.sixel.empty() || item.width <= 0 || item.height <= 0) {
@@ -1083,13 +1099,15 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
     const auto now2 = std::chrono::steady_clock::now();
     if (next_frame_time > now2) {
       auto delta = next_frame_time - now2;
-      // More precise timing for smoother playback
-      if (delta > std::chrono::microseconds(500)) {
-        std::this_thread::sleep_for(delta - std::chrono::microseconds(500));
+      // Adaptive timing - shorter sleep for better responsiveness
+      if (delta > std::chrono::microseconds(200)) {
+        std::this_thread::sleep_for(delta - std::chrono::microseconds(200));
       }
-      // Busy wait for precise timing
-      while (std::chrono::steady_clock::now() < next_frame_time) {
+      // Minimal busy wait for precise timing
+      int spin_count = 0;
+      while (std::chrono::steady_clock::now() < next_frame_time && spin_count < 1000) {
         std::this_thread::yield();
+        spin_count++;
       }
     }
 

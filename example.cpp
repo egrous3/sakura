@@ -104,7 +104,7 @@ bool process_local_video(std::string path) {
   bool stat = false;
   auto [termPixW, termPixH] = getTerminalPixelSize();
 
-  // Optimized settings for pixel perfection and minimal frame drops
+  // Optimized settings for responsive playback with minimal lag
   Sakura::RenderOptions options;
   options.mode = Sakura::SIXEL;
   options.dither = Sakura::FLOYD_STEINBERG;
@@ -112,8 +112,8 @@ bool process_local_video(std::string path) {
   options.width = termPixW;
   options.height = termPixH;
   options.paletteSize = 256; // Maximum colors for best quality
-  options.queueSize = 64; // Larger queues for stability
-  options.prebufferFrames = 32; // More prebuffering for smoothness
+  options.queueSize = 16; // Smaller queues for lower latency
+  options.prebufferFrames = 8; // Minimal prebuffering for responsiveness
   options.staticPalette = true; // Consistent palette for quality
   options.fastResize = false; // High quality resizing
   options.targetFps = 0.0; // Follow source FPS for authenticity
@@ -121,7 +121,7 @@ bool process_local_video(std::string path) {
   options.adaptiveScale = false; // No size compromises
   options.hwAccelPipe = false; // Stable software decoding
   options.tileUpdates = false; // Full frame updates for quality
-  options.fit = Sakura::FitMode::COVER; // Maintain aspect ratio
+  options.fit = Sakura::FitMode::COVER; // Fill terminal
 
   stat = sakura.renderVideoFromFile(path, options);
   return stat;
