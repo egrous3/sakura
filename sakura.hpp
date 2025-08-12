@@ -9,9 +9,11 @@
 class Sakura {
 public:
   enum CharStyle { SIMPLE, DETAILED, BLOCKS };
-  enum RenderMode { EXACT, ASCII_COLOR, ASCII_GRAY, SIXEL };
+  enum RenderMode { EXACT, ASCII_COLOR, ASCII_GRAY, SIXEL, ULTRA_FAST };
   enum DitherMode { NONE, FLOYD_STEINBERG };
   enum FitMode { STRETCH, COVER, CONTAIN };
+
+  enum SixelQuality { LOW, HIGH };
 
   struct RenderOptions {
     int width = 0;
@@ -29,6 +31,7 @@ public:
     bool staticPalette = false;
     FitMode fit = COVER;
     bool fastResize = false; // Use INTER_NEAREST for video pre-scaling
+    SixelQuality sixelQuality = HIGH; // Add this line
     // Throughput controls
     double targetFps =
         0.0; // 0 = follow source FPS; otherwise downsample to this
@@ -74,7 +77,8 @@ private:
   std::vector<std::string> renderAsciiGrayscale(const cv::Mat &resized,
                                                 std::string_view charSet,
                                                 DitherMode dither) const;
-  std::string renderSixel(const cv::Mat &img, int paletteSize = 16) const;
+  std::string renderSixel(const cv::Mat &img, int paletteSize = 16, int output_width = 0, int output_height = 0, SixelQuality quality = HIGH) const;
+  std::string renderVideoUltraFast(const cv::Mat &frame) const; // New ultra-fast method
   cv::Mat quantizeImage(const cv::Mat &inputImg, int numColors,
                         cv::Mat &palette) const;
   bool preprocessAndResize(const cv::Mat &img, const RenderOptions &options,

@@ -11,9 +11,11 @@
 #include <future>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <cstdio>
 #include <mutex>
+#include <queue>
 #include <sixel.h>
 #include <sstream>
 #include <string_view>
@@ -125,7 +127,7 @@ bool Sakura::renderFromMat(const cv::Mat &img,
       processed = img;
     }
 
-    const std::string sixelData = renderSixel(processed, options.paletteSize);
+    const std::string sixelData = renderSixel(processed, options.paletteSize, options.width, options.height, options.sixelQuality);
     std::cout << sixelData << std::flush;
     return true;
   }
@@ -408,7 +410,7 @@ int string_writer(char *data, int size, void *priv) {
 }
 } // namespace
 
-std::string Sakura::renderSixel(const cv::Mat &img, int paletteSize) const {
+std::string Sakura::renderSixel(const cv::Mat &img, int paletteSize, int output_width, int output_height, SixelQuality quality) const {
   if (img.empty() || img.cols <= 0 || img.rows <= 0) {
     return "";
   }
@@ -435,7 +437,7 @@ std::string Sakura::renderSixel(const cv::Mat &img, int paletteSize) const {
   }
 
   std::string sixel_output_string;
-  sixel_output_string.reserve(1024 * 1024); // Pre-allocate :3
+  sixel_output_string.reserve(quality == HIGH ? 1024 * 1024 : 512 * 1024); // Pre-allocate based on quality
 
   // Use RAII for sixel resources
   struct SixelOutputDeleter {
@@ -472,10 +474,12 @@ std::string Sakura::renderSixel(const cv::Mat &img, int paletteSize) const {
     dither.reset(raw_dither);
   }
 
+  int sixel_quality_mode = (quality == HIGH) ? SIXEL_QUALITY_HIGH : SIXEL_QUALITY_LOW;
+
   if (sixel_dither_initialize(dither.get(), rgb_img.data, rgb_img.cols,
                               rgb_img.rows, SIXEL_PIXELFORMAT_RGB888,
-                              SIXEL_LARGE_NORM, SIXEL_REP_CENTER_BOX,
-                              SIXEL_QUALITY_HIGH) != SIXEL_OK) {
+                              SIXEL_LARGE_AUTO, SIXEL_REP_CENTER_BOX,
+                              sixel_quality_mode) != SIXEL_OK) {
     return "";
   }
 
@@ -484,7 +488,49 @@ std::string Sakura::renderSixel(const cv::Mat &img, int paletteSize) const {
     return "";
   }
 
+  // Manually insert raster attributes for older libsixel versions to support scaling.
+  if (output_width > 0 && output_height > 0) {
+      // The sixel data starts with DCS 'q', then raster attributes, then palette.
+      // We find the palette start '#' and insert the raster attributes before it.
+      // The format is "pan;pad;ph;pv
+      size_t pos = sixel_output_string.find('#');
+      if (pos != std::string::npos) {
+          std::string raster_attrs = "\"" + std::to_string(1) + ";" + std::to_string(1) + ";" + std::to_string(output_width) + ";" + std::to_string(output_height);
+          sixel_output_string.insert(pos, raster_attrs);
+      }
+  }
+
   return sixel_output_string;
+}
+
+// Ultra-fast video renderer using direct terminal colors (no SIXEL)
+std::string Sakura::renderVideoUltraFast(const cv::Mat &frame) const {
+  if (frame.empty() || frame.channels() != 3) {
+    return "";
+  }
+  
+  const int height = frame.rows;
+  const int width = frame.cols;
+  
+  std::string output;
+  output.reserve(height * width * 25); // Pre-allocate for speed
+  
+  // Use Unicode block characters for high density rendering
+  for (int y = 0; y < height; y += 2) { // Process 2 rows at a time
+    for (int x = 0; x < width; ++x) {
+      const cv::Vec3b top_pixel = frame.at<cv::Vec3b>(y, x);
+      const cv::Vec3b bottom_pixel = (y + 1 < height) ? frame.at<cv::Vec3b>(y + 1, x) : top_pixel;
+      
+      // Use 24-bit RGB terminal colors
+      output += "\033[48;2;" + std::to_string(bottom_pixel[2]) + ";" + 
+                std::to_string(bottom_pixel[1]) + ";" + std::to_string(bottom_pixel[0]) + 
+                "m\033[38;2;" + std::to_string(top_pixel[2]) + ";" + 
+                std::to_string(top_pixel[1]) + ";" + std::to_string(top_pixel[0]) + "m▀";
+    }
+    output += "\033[0m\n"; // Reset colors and newline
+  }
+  
+  return output;
 }
 
 bool Sakura::renderGridFromUrls(const std::vector<std::string> &urls, int cols,
@@ -614,7 +660,7 @@ bool Sakura::renderGifFromUrl(std::string_view gifUrl,
     cv::resize(frame, resized_frame, target_size, 0, 0, cv::INTER_NEAREST);
 
     const std::string sixel_data =
-        renderSixel(resized_frame, gifOptions.paletteSize);
+        renderSixel(resized_frame, gifOptions.paletteSize, gifOptions.width, gifOptions.height, gifOptions.sixelQuality);
     std::cout << "\033[H" << sixel_data;
 
     frame_number++;
@@ -658,486 +704,77 @@ bool Sakura::renderVideoFromUrl(std::string_view videoUrl,
 
 bool Sakura::renderVideoFromFile(std::string_view videoPath,
                                  const RenderOptions &options) const {
+  std::cout << "Opening video: " << videoPath << std::endl;
   cv::VideoCapture cap;
-  if (options.hwAccelPipe) {
-    const auto [termW, termH] = getTerminalSize();
-    const int outW = std::max(1, options.width > 0 ? options.width : termW);
-    const int outH = std::max(1, options.height > 0 ? options.height : termH);
-    // Use popen to read rawvideo directly if OpenCV backend cannot open named pipe
-    std::ostringstream oss;
-    oss << "ffmpeg -hide_banner -nostats -loglevel error -hwaccel auto -i "
-        << '"' << videoPath << '"'
-        << " -vf scale=" << outW << ":" << outH
-        << ":flags=fast_bilinear -pix_fmt bgr24 -f rawvideo -";
-    const std::string cmd = oss.str();
-    FILE *pipe = popen(cmd.c_str(), "r");
-    if (!pipe) {
-      std::cerr << "Failed to spawn ffmpeg pipe for hw decode" << std::endl;
-      return false;
-    }
-    // Wrap FILE* with OpenCV using CAP_IMAGES and a custom buffer via cv::VideoCapture::open with filename "-"
-    // Fallback: if this fails, show message and return
-    if (!cap.open(cmd, cv::CAP_FFMPEG)) {
-      std::cerr << "VIDEOIO(FFMPEG) couldn't open pipe by name; using stdio may be needed" << std::endl;
-      pclose(pipe);
-      return false;
-    }
-    pclose(pipe);
-  } else {
-    cap.open(std::string(videoPath));
-    if (!cap.isOpened()) {
-      std::cerr << "Failed to open video: " << videoPath << std::endl;
-      return false;
-    }
+  cap.open(std::string(videoPath));
+  if (!cap.isOpened()) {
+    std::cerr << "Failed to open video: " << videoPath << std::endl;
+    return false;
   }
 
-  // video properties
+  // Get video properties
   double fps = cap.get(cv::CAP_PROP_FPS);
   const int frame_count = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_COUNT));
-  const int video_width = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH));
-  const int video_height = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
-  const double duration = frame_count / fps;
+  if (fps <= 0) fps = 30.0;
 
-  if (fps <= 0)
-    fps = 30.0; // Default fallback
-  RenderOptions videoOptions = options;
+  std::cout << "Video: " << fps << " FPS, " << frame_count << " frames (ULTRA-FAST MODE)" << std::endl;
+  std::cout << "Target dimensions: " << options.width << "x" << options.height << std::endl;
 
-  double scale_factor = 1.0; // Use full scale for pixel perfection
-  if (options.fit == FitMode::COVER) {
-    // For COVER, do not shrink: aim to fill the terminal fully
-    scale_factor = 1.0;
-  } else if (options.fit == FitMode::CONTAIN) {
-    // For CONTAIN, keep full scale for best quality
-    scale_factor = 1.0;
-  } else {
-    // For other modes, slight reduction only if very high FPS
-    if (fps > 60.0)
-      scale_factor = 0.95;
-    else
-      scale_factor = 1.0;
-  }
+  // Use terminal dimensions for COVER mode
+  const int target_width = options.width;
+  const int target_height = options.height * 2; // Double height since we use 2 rows per character
 
-  videoOptions.width = static_cast<int>(options.width * scale_factor);
-  videoOptions.height = static_cast<int>(options.height * scale_factor);
+  std::cout << "\033[2J\033[?25l" << std::flush; // Clear screen, hide cursor
 
-  const double videoAspect = static_cast<double>(video_width) / video_height;
-  const double termAspect =
-      static_cast<double>(videoOptions.width) / videoOptions.height;
+  // Start audio
+  std::string audio_cmd = "ffplay -nodisp -autoexit -vn -nostats -loglevel quiet -sync video \"" + 
+                         std::string(videoPath) + "\" 2>/dev/null &";
+  std::system(audio_cmd.c_str());
 
-  switch (options.fit) {
-  case FitMode::STRETCH: {
-    // Keep videoOptions as-it is (stretched)
-    break;
-  }
-  case FitMode::COVER: {
-    // Fill entire terminal, may crop in one dimension
-    if (videoAspect > termAspect) {
-      // Video wider; increase height to cover
-      videoOptions.height = static_cast<int>(videoOptions.width / videoAspect);
-      // Then scale to ensure height covers terminal
-      if (videoOptions.height < options.height) {
-        videoOptions.height = options.height;
-        videoOptions.width =
-            static_cast<int>(videoOptions.height * videoAspect);
-      }
-    } else {
-      // Video taller; increase width to cover
-      videoOptions.width = static_cast<int>(videoOptions.height * videoAspect);
-      if (videoOptions.width < options.width) {
-        videoOptions.width = options.width;
-        videoOptions.height =
-            static_cast<int>(videoOptions.width / videoAspect);
-      }
-    }
-    break;
-  }
-  case FitMode::CONTAIN:
-  default: {
-    // Fit inside terminal bounds; no cropping
-    if (videoAspect > termAspect) {
-      videoOptions.height = static_cast<int>(videoOptions.width / videoAspect);
-    } else {
-      videoOptions.width = static_cast<int>(videoOptions.height * videoAspect);
-    }
-    break;
-  }
-  }
-
-  cv::Mat frame, resized_frame;
-  const int base_out_w = videoOptions.width;
-  const int base_out_h = videoOptions.height;
-  std::atomic<double> current_scale{1.0};
-  cv::Size target_size(base_out_w, base_out_h);
-
-  // Apply target FPS downsampling if requested
-  double render_fps = fps;
-  if (options.targetFps > 0.0 && options.targetFps < fps) {
-    render_fps = options.targetFps;
-  }
-  const auto frame_duration_ns = std::chrono::nanoseconds(
-      static_cast<long long>(1000000000.0 / render_fps));
-
-  int frame_number = 0;
-  int frames_dropped = 0;
-  int frames_rendered = 0;
-
-  std::cout << "\033[2J\033[?25l" << std::flush;
-
-  // Pre-decode and resize frames on a background thread into a bounded queue
-  struct FrameItem {
-    cv::Mat frame;
-    int index = 0;
-  };
-  struct SixelItem {
-    std::string sixel;
-    int index = 0;
-    int width = 0;
-    int height = 0;
-  };
-
-  std::deque<FrameItem> frame_queue;
-  std::mutex queue_mutex;
-  std::condition_variable cv_not_empty, cv_not_full;
-  const std::size_t max_queue_size =
-      static_cast<std::size_t>(std::max(16, options.queueSize)); // Smaller frame queue to reduce lag
-
-  std::deque<SixelItem> sixel_queue;
-  std::mutex sixel_queue_mutex;
-  std::condition_variable cv_sixel_not_empty, cv_sixel_not_full;
-  const std::size_t max_sixel_queue_size =
-      static_cast<std::size_t>(std::max(16, options.queueSize)); // Smaller sixel queue
-
-  std::atomic<bool> reader_done{false};
-  std::atomic<bool> encoder_done{false};
-  std::atomic<bool> stop_pipeline{false};
-
-  std::atomic<int> next_sixel_index_to_push{0};
-  std::map<int, SixelItem> sixel_map;
-
-  std::thread reader_thread([&]() {
-    cv::Mat raw, resized_local;
-    int read_index = 0;
-    int source_index = 0;
-    double frame_accumulator = 0.0;
-    const double ratio = render_fps / fps; // 0<ratio<=1
-    while (!stop_pipeline.load(std::memory_order_relaxed)) {
-      if (!cap.read(raw)) {
-        break;
-      }
-      // Downsample input frames if targetFps < source fps based on ratio
-      frame_accumulator += ratio;
-      if (frame_accumulator < 1.0) {
-        // skip encoding this source frame
-        ++source_index;
-        continue;
-      }
-      frame_accumulator -= 1.0;
-      
-      // Ensure frame is valid before processing
-      if (raw.empty() || raw.cols <= 0 || raw.rows <= 0) {
-        ++source_index;
-        continue;
-      }
-      
-      const double scale_snapshot = 1.0; // Always use full scale for pixel perfection
-      const int out_w =
-          std::max(1, static_cast<int>(base_out_w * scale_snapshot));
-      const int out_h =
-          std::max(1, static_cast<int>(base_out_h * scale_snapshot));
-      const cv::Size dyn_size(out_w, out_h);
-      const int interpolation = cv::INTER_CUBIC; // Higher quality interpolation
-      
-      // Ensure target size is valid
-      if (dyn_size.width <= 0 || dyn_size.height <= 0) {
-        ++source_index;
-        continue;
-      }
-      
-      cv::resize(raw, resized_local, dyn_size, 0, 0, interpolation);
-      
-      // Ensure resized frame is valid and has proper data
-      if (resized_local.empty() || !resized_local.isContinuous() || 
-          resized_local.data == nullptr) {
-        ++source_index;
-        continue;
-      }
-      
-      // Additional safety check for frame integrity
-      if (resized_local.cols != dyn_size.width || resized_local.rows != dyn_size.height) {
-        ++source_index;
-        continue;
-      }
-
-      FrameItem item{resized_local.clone(), read_index++};
-      
-      // Validate the cloned frame
-      if (item.frame.empty() || item.frame.data == nullptr) {
-        ++source_index;
-        continue;
-      }
-      
-      ++source_index;
-      std::unique_lock<std::mutex> lk(queue_mutex);
-      cv_not_full.wait(lk, [&] {
-        return stop_pipeline.load(std::memory_order_relaxed) ||
-               frame_queue.size() < max_queue_size;
-      });
-      if (stop_pipeline.load(std::memory_order_relaxed)) {
-        break;
-      }
-      frame_queue.emplace_back(std::move(item));
-      lk.unlock();
-      cv_not_empty.notify_one();
-    }
-    reader_done = true;
-    cv_not_empty.notify_all();
-  });
-
-  std::atomic<int> current_palette_size{videoOptions.paletteSize};
-
-  std::vector<std::thread> encoder_threads;
-  const int num_encoders =
-      std::max(1, static_cast<int>(std::thread::hardware_concurrency() / 2)); // Conservative thread count
-
-  for (int i = 0; i < num_encoders; ++i) {
-    encoder_threads.emplace_back([&]() {
-      while (true) {
-        FrameItem item;
-        {
-          std::unique_lock<std::mutex> lk(queue_mutex);
-          cv_not_empty.wait(lk, [&] {
-            return stop_pipeline.load(std::memory_order_relaxed) ||
-                   !frame_queue.empty() || reader_done.load();
-          });
-
-          if (stop_pipeline.load(std::memory_order_relaxed) ||
-              (frame_queue.empty() && reader_done.load())) {
-            break;
-          }
-
-          item = std::move(frame_queue.front());
-          frame_queue.pop_front();
-          lk.unlock();
-          cv_not_full.notify_one();
-        }
-
-        // Validate frame before encoding
-        if (item.frame.empty() || item.frame.data == nullptr || 
-            item.frame.cols <= 0 || item.frame.rows <= 0) {
-          continue; // Skip invalid frames
-        }
-
-        const std::string sixel_data =
-            renderSixel(item.frame, current_palette_size.load());
-
-        // Validate the encoded data
-        if (sixel_data.empty()) {
-          continue; // Skip corrupted frames
-        }
-
-        SixelItem sixel_item{std::move(sixel_data), item.index,
-                             item.frame.cols, item.frame.rows};
-
-        // Optimized thread-safe frame reordering with minimal lock time
-        {
-          std::lock_guard<std::mutex> lk(sixel_queue_mutex);
-          sixel_map[item.index] = std::move(sixel_item);
-        }
-        
-        // Process sequential frames in a separate, faster critical section
-        {
-          std::unique_lock<std::mutex> lk(sixel_queue_mutex);
-          int expected_index = next_sixel_index_to_push.load();
-          
-          // Only process a few frames at a time to prevent lock starvation
-          int processed_count = 0;
-          const int max_batch_size = 3;
-          
-          while (processed_count < max_batch_size && 
-                 sixel_map.find(expected_index) != sixel_map.end()) {
-            
-            // Non-blocking check for space - if full, exit immediately
-            if (sixel_queue.size() >= max_sixel_queue_size) {
-              break;
-            }
-            
-            if (stop_pipeline.load(std::memory_order_relaxed)) {
-              break;
-            }
-            
-            // Move frame to output queue
-            auto frame_iter = sixel_map.find(expected_index);
-            if (frame_iter != sixel_map.end()) {
-              sixel_queue.push_back(std::move(frame_iter->second));
-              sixel_map.erase(frame_iter);
-              expected_index++;
-              processed_count++;
-            } else {
-              break;
-            }
-          }
-          
-          if (processed_count > 0) {
-            next_sixel_index_to_push.store(expected_index, std::memory_order_relaxed);
-            cv_sixel_not_empty.notify_all(); // Wake up display thread
-          }
-        }
-      }
-    });
-  }
-
-  std::thread all_encoders_done_waiter([&]() {
-    for (auto &t : encoder_threads) {
-      if (t.joinable()) {
-        t.join();
-      }
-    }
-    encoder_done = true;
-    cv_sixel_not_empty.notify_all();
-  });
-
-  {
-    std::unique_lock<std::mutex> lk(sixel_queue_mutex);
-    cv_sixel_not_empty.wait(lk, [&] {
-      return encoder_done.load(std::memory_order_relaxed) ||
-             sixel_queue.size() >=
-                 static_cast<std::size_t>(
-                     std::max(4, options.prebufferFrames / 4)); // Minimal prebuffering to reduce lag
-    });
-  }
-
-  // Start audio (low-latency) and optionally adapt quality over time
-  std::atomic<bool> audio_running{true};
-  auto audio_future = std::async(std::launch::async, [&]() {
-    const std::string audio_cmd = "ffplay -nodisp -autoexit -vn -nostats "
-                                  "-loglevel quiet -fflags +nobuffer "
-                                  "-flags low_delay \"" +
-                                  std::string(videoPath) + "\" 2>/dev/null";
-    std::system(audio_cmd.c_str());
-    audio_running = false;
-  });
-
+  const auto frame_duration = std::chrono::microseconds(static_cast<int64_t>(1000000.0 / fps));
   const auto start_time = std::chrono::steady_clock::now();
+  
+  int frames_displayed = 0, frames_dropped = 0;
+  cv::Mat frame, resized_frame;
 
-  // Playback loop
-  // Adaptive controls
-  int last_draw_w = 0;
-  int last_draw_h = 0;
-  int window_total = 0;
-  int window_dropped = 0;
-  int stable_intervals = 0;
-  const int adjust_interval_frames = std::max(10, static_cast<int>(render_fps));
+  while (cap.read(frame)) {
+    if (frame.empty()) break;
 
-  while (true) {
-    SixelItem item;
-    {
-      std::unique_lock<std::mutex> lk(sixel_queue_mutex);
-      
-      // Use shorter timeout to prevent thread starvation
-      cv_sixel_not_empty.wait_for(lk, std::chrono::milliseconds(1), [&] {
-        return !sixel_queue.empty() || encoder_done.load(std::memory_order_relaxed);
-      });
-      
-      if (sixel_queue.empty()) {
-        if (encoder_done.load(std::memory_order_relaxed)) {
-          break;
-        }
-        continue; // Try again quickly
-      }
+    const auto frame_start = std::chrono::steady_clock::now();
 
-      // More aggressive but smarter frame dropping for responsiveness
-      const auto now = std::chrono::steady_clock::now();
-      const long long target_frame_number =
-          std::chrono::duration_cast<std::chrono::nanoseconds>(now - start_time)
-              .count() /
-          frame_duration_ns.count();
+    // Resize frame for COVER mode
+    cv::resize(frame, resized_frame, cv::Size(target_width, target_height), 0, 0, cv::INTER_NEAREST);
 
-      // Drop frames more aggressively to prevent lag buildup
-      if (sixel_queue.size() > 3) {
-        const int behind =
-            static_cast<int>(target_frame_number - sixel_queue.front().index);
-        int drop_budget =
-            std::min<int>(std::max(0, behind - 1), static_cast<int>(sixel_queue.size()) - 1);
-        while (drop_budget-- > 0 && sixel_queue.size() > 1) {
-          sixel_queue.pop_front();
-          frames_dropped++;
-          window_dropped++;
-        }
-      }
-
-      item = std::move(sixel_queue.front());
-      sixel_queue.pop_front();
-      // Don't hold lock while notifying
-    }
-    cv_sixel_not_full.notify_one();
-
-    // Validate frame data before display
-    if (item.sixel.empty() || item.width <= 0 || item.height <= 0) {
-      continue; // Skip corrupted frames
+    // Use ultra-fast renderer (no SIXEL)
+    const std::string frame_output = renderVideoUltraFast(resized_frame);
+    if (frame_output.empty()) {
+      std::cerr << "Frame output is empty!" << std::endl;
+      continue;
     }
 
-    // Disable adaptive palette for pixel perfection
-    // Keep consistent high quality throughout playback
+    // Display frame
+    std::cout << "\033[H" << frame_output << std::flush;
+    frames_displayed++;
+
+    // Frame timing
+    const auto target_time = start_time + (frames_displayed * frame_duration);
+    const auto now = std::chrono::steady_clock::now();
     
-    // Clear screen if current frame is smaller than the previous to avoid
-    // leftover pixels
-    if (item.width < last_draw_w || item.height < last_draw_h) {
-      std::cout << "\033[2J";
+    if (now < target_time) {
+      std::this_thread::sleep_until(target_time);
+    } else {
+      frames_dropped++;
     }
-    std::cout << "\033[H";
-    std::cout.write(item.sixel.data(),
-                    static_cast<std::streamsize>(item.sixel.size()));
-    std::cout.flush();
-    frames_rendered++;
-    window_total++;
-    frame_number = item.index + 1;
-    last_draw_w = item.width;
-    last_draw_h = item.height;
-
-    const auto next_frame_time =
-        start_time + (frame_duration_ns * frame_number);
-    const auto now2 = std::chrono::steady_clock::now();
-    if (next_frame_time > now2) {
-      auto delta = next_frame_time - now2;
-      // Adaptive timing - shorter sleep for better responsiveness
-      if (delta > std::chrono::microseconds(200)) {
-        std::this_thread::sleep_for(delta - std::chrono::microseconds(200));
-      }
-      // Minimal busy wait for precise timing
-      int spin_count = 0;
-      while (std::chrono::steady_clock::now() < next_frame_time && spin_count < 1000) {
-        std::this_thread::yield();
-        spin_count++;
-      }
-    }
-
-    // Disable adaptive scale for pixel perfection
-    // Keep consistent size throughout playback for best quality
   }
 
-  stop_pipeline = true;
-  cv_not_full.notify_all();
-  cv_not_empty.notify_all();
-  cv_sixel_not_full.notify_all();
-  cv_sixel_not_empty.notify_all();
-  if (reader_thread.joinable())
-    reader_thread.join();
-  if (all_encoders_done_waiter.joinable())
-    all_encoders_done_waiter.join();
+  std::cout << "\033[?25h"; // Show cursor
+  std::system("pkill -f 'ffplay.*-nodisp' 2>/dev/null");
+  
+  double drop_rate = frames_displayed > 0 ? 100.0 * frames_dropped / frames_displayed : 0.0;
+  std::cout << "\nPerformance: Displayed=" << frames_displayed 
+            << " Dropped=" << frames_dropped << " (" << std::fixed << std::setprecision(1) 
+            << drop_rate << "%) ULTRA-FAST MODE" << std::endl;
 
-  std::cout << "\033[?25h" << std::flush;
-  std::cout.unsetf(std::ios::unitbuf);
-  cap.release();
-  std::system("pkill -f 'ffplay -nodisp' 2>/dev/null");
-
-  const double drop_rate =
-      frame_number > 0 ? (frames_dropped * 100.0) / frame_number : 0.0;
-  const double render_rate =
-      frame_number > 0 ? (frames_rendered * 100.0) / frame_number : 0.0;
-  std::cout << "\nPlayback completed. Total: " << frame_number
-            << ", Rendered: " << frames_rendered << " (" << std::fixed
-            << std::setprecision(1) << render_rate << "%)"
-            << ", Dropped: " << frames_dropped << " (" << drop_rate << "%)"
-            << std::endl;
   return true;
 }
+

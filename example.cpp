@@ -17,6 +17,15 @@ std::pair<int, int> getTerminalPixelSize() {
   return {1920, 1080};
 }
 
+std::pair<int, int> getTerminalCharSize() {
+  struct winsize w;
+  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0) {
+    return {w.ws_col, w.ws_row};
+  }
+  // Fallback
+  return {80, 24};
+}
+
 std::pair<int, int> calculateBestFitSize(int contentWidth, int contentHeight,
                                          int termWidth, int termHeight) {
   double contentAspect = static_cast<double>(contentWidth) / contentHeight;
@@ -102,26 +111,27 @@ bool process_video(std::string url) {
 bool process_local_video(std::string path) {
   Sakura sakura;
   bool stat = false;
-  auto [termPixW, termPixH] = getTerminalPixelSize();
+  auto [termCols, termRows] = getTerminalCharSize(); // Use character dimensions
 
-  // Optimized settings for responsive playback with minimal lag
+  // Ultra-fast settings for maximum performance
   Sakura::RenderOptions options;
-  options.mode = Sakura::SIXEL;
-  options.dither = Sakura::FLOYD_STEINBERG;
+  options.mode = Sakura::ULTRA_FAST;
+  options.dither = Sakura::NONE;
   options.terminalAspectRatio = 1.0;
-  options.width = termPixW;
-  options.height = termPixH;
-  options.paletteSize = 256; // Maximum colors for best quality
-  options.queueSize = 16; // Smaller queues for lower latency
-  options.prebufferFrames = 8; // Minimal prebuffering for responsiveness
-  options.staticPalette = true; // Consistent palette for quality
-  options.fastResize = false; // High quality resizing
-  options.targetFps = 0.0; // Follow source FPS for authenticity
-  options.adaptivePalette = false; // No quality compromises
-  options.adaptiveScale = false; // No size compromises
-  options.hwAccelPipe = false; // Stable software decoding
-  options.tileUpdates = false; // Full frame updates for quality
+  options.width = termCols;
+  options.height = termRows;
+  options.paletteSize = 16; // Not used in ultra-fast mode
+  options.queueSize = 1;
+  options.prebufferFrames = 1;
+  options.staticPalette = true;
+  options.fastResize = true;
+  options.targetFps = 0.0; // Follow source FPS
+  options.adaptivePalette = false;
+  options.adaptiveScale = false;
+  options.hwAccelPipe = false;
+  options.tileUpdates = false;
   options.fit = Sakura::FitMode::COVER; // Fill terminal
+  options.sixelQuality = Sakura::SixelQuality::HIGH;
 
   stat = sakura.renderVideoFromFile(path, options);
   return stat;
