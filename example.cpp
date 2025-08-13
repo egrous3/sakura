@@ -120,7 +120,6 @@ bool process_local_video(std::string path) {
   options.terminalAspectRatio = 1.0;
   options.width = termCols;
   options.height = termRows;
-  options.paletteSize = 16; // Not used in ultra-fast mode
   options.queueSize = 1;
   options.prebufferFrames = 1;
   options.staticPalette = true;

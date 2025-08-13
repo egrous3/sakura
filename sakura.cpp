@@ -4,6 +4,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cpr/cpr.h>
+#include <cstdio>
 #include <cstdlib>
 #include <ctime>
 #include <deque>
@@ -13,7 +14,6 @@
 #include <iostream>
 #include <map>
 #include <memory>
-#include <cstdio>
 #include <mutex>
 #include <queue>
 #include <sixel.h>
@@ -127,7 +127,9 @@ bool Sakura::renderFromMat(const cv::Mat &img,
       processed = img;
     }
 
-    const std::string sixelData = renderSixel(processed, options.paletteSize, options.width, options.height, options.sixelQuality);
+    const std::string sixelData =
+        renderSixel(processed, options.paletteSize, options.width,
+                    options.height, options.sixelQuality);
     std::cout << sixelData << std::flush;
     return true;
   }
@@ -410,11 +412,13 @@ int string_writer(char *data, int size, void *priv) {
 }
 } // namespace
 
-std::string Sakura::renderSixel(const cv::Mat &img, int paletteSize, int output_width, int output_height, SixelQuality quality) const {
+std::string Sakura::renderSixel(const cv::Mat &img, int paletteSize,
+                                int output_width, int output_height,
+                                SixelQuality quality) const {
   if (img.empty() || img.cols <= 0 || img.rows <= 0) {
     return "";
   }
-  
+
   // Validate input parameters
   if (paletteSize <= 0 || paletteSize > 256) {
     paletteSize = 256; // Fallback to safe value
@@ -430,14 +434,16 @@ std::string Sakura::renderSixel(const cv::Mat &img, int paletteSize, int output_
   } else {
     return ""; // Unsupported format
   }
-  
+
   // Validate converted image
   if (rgb_img.empty() || rgb_img.data == nullptr) {
     return "";
   }
 
   std::string sixel_output_string;
-  sixel_output_string.reserve(quality == HIGH ? 1024 * 1024 : 512 * 1024); // Pre-allocate based on quality
+  sixel_output_string.reserve(
+      quality == HIGH ? 1024 * 1024
+                      : 512 * 1024); // Pre-allocate based on quality
 
   // Use RAII for sixel resources
   struct SixelOutputDeleter {
@@ -474,7 +480,8 @@ std::string Sakura::renderSixel(const cv::Mat &img, int paletteSize, int output_
     dither.reset(raw_dither);
   }
 
-  int sixel_quality_mode = (quality == HIGH) ? SIXEL_QUALITY_HIGH : SIXEL_QUALITY_LOW;
+  int sixel_quality_mode =
+      (quality == HIGH) ? SIXEL_QUALITY_HIGH : SIXEL_QUALITY_LOW;
 
   if (sixel_dither_initialize(dither.get(), rgb_img.data, rgb_img.cols,
                               rgb_img.rows, SIXEL_PIXELFORMAT_RGB888,
@@ -488,16 +495,19 @@ std::string Sakura::renderSixel(const cv::Mat &img, int paletteSize, int output_
     return "";
   }
 
-  // Manually insert raster attributes for older libsixel versions to support scaling.
+  // Manually insert raster attributes for older libsixel versions to support
+  // scaling.
   if (output_width > 0 && output_height > 0) {
-      // The sixel data starts with DCS 'q', then raster attributes, then palette.
-      // We find the palette start '#' and insert the raster attributes before it.
-      // The format is "pan;pad;ph;pv
-      size_t pos = sixel_output_string.find('#');
-      if (pos != std::string::npos) {
-          std::string raster_attrs = "\"" + std::to_string(1) + ";" + std::to_string(1) + ";" + std::to_string(output_width) + ";" + std::to_string(output_height);
-          sixel_output_string.insert(pos, raster_attrs);
-      }
+    // The sixel data starts with DCS 'q', then raster attributes, then palette.
+    // We find the palette start '#' and insert the raster attributes before it.
+    // The format is "pan;pad;ph;pv
+    size_t pos = sixel_output_string.find('#');
+    if (pos != std::string::npos) {
+      std::string raster_attrs =
+          "\"" + std::to_string(1) + ";" + std::to_string(1) + ";" +
+          std::to_string(output_width) + ";" + std::to_string(output_height);
+      sixel_output_string.insert(pos, raster_attrs);
+    }
   }
 
   return sixel_output_string;
@@ -508,28 +518,31 @@ std::string Sakura::renderVideoUltraFast(const cv::Mat &frame) const {
   if (frame.empty() || frame.channels() != 3) {
     return "";
   }
-  
+
   const int height = frame.rows;
   const int width = frame.cols;
-  
+
   std::string output;
   output.reserve(height * width * 25); // Pre-allocate for speed
-  
+
   // Use Unicode block characters for high density rendering
   for (int y = 0; y < height; y += 2) { // Process 2 rows at a time
     for (int x = 0; x < width; ++x) {
       const cv::Vec3b top_pixel = frame.at<cv::Vec3b>(y, x);
-      const cv::Vec3b bottom_pixel = (y + 1 < height) ? frame.at<cv::Vec3b>(y + 1, x) : top_pixel;
-      
+      const cv::Vec3b bottom_pixel =
+          (y + 1 < height) ? frame.at<cv::Vec3b>(y + 1, x) : top_pixel;
+
       // Use 24-bit RGB terminal colors
-      output += "\033[48;2;" + std::to_string(bottom_pixel[2]) + ";" + 
-                std::to_string(bottom_pixel[1]) + ";" + std::to_string(bottom_pixel[0]) + 
-                "m\033[38;2;" + std::to_string(top_pixel[2]) + ";" + 
-                std::to_string(top_pixel[1]) + ";" + std::to_string(top_pixel[0]) + "m▀";
+      output += "\033[48;2;" + std::to_string(bottom_pixel[2]) + ";" +
+                std::to_string(bottom_pixel[1]) + ";" +
+                std::to_string(bottom_pixel[0]) + "m\033[38;2;" +
+                std::to_string(top_pixel[2]) + ";" +
+                std::to_string(top_pixel[1]) + ";" +
+                std::to_string(top_pixel[0]) + "m▀";
     }
     output += "\033[0m\n"; // Reset colors and newline
   }
-  
+
   return output;
 }
 
@@ -660,7 +673,8 @@ bool Sakura::renderGifFromUrl(std::string_view gifUrl,
     cv::resize(frame, resized_frame, target_size, 0, 0, cv::INTER_NEAREST);
 
     const std::string sixel_data =
-        renderSixel(resized_frame, gifOptions.paletteSize, gifOptions.width, gifOptions.height, gifOptions.sixelQuality);
+        renderSixel(resized_frame, gifOptions.paletteSize, gifOptions.width,
+                    gifOptions.height, gifOptions.sixelQuality);
     std::cout << "\033[H" << sixel_data;
 
     frame_number++;
@@ -715,35 +729,43 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
   // Get video properties
   double fps = cap.get(cv::CAP_PROP_FPS);
   const int frame_count = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_COUNT));
-  if (fps <= 0) fps = 30.0;
+  if (fps <= 0)
+    fps = 30.0;
 
-  std::cout << "Video: " << fps << " FPS, " << frame_count << " frames (ULTRA-FAST MODE)" << std::endl;
-  std::cout << "Target dimensions: " << options.width << "x" << options.height << std::endl;
+  std::cout << "Video: " << fps << " FPS, " << frame_count
+            << " frames (ULTRA-FAST MODE)" << std::endl;
+  std::cout << "Target dimensions: " << options.width << "x" << options.height
+            << std::endl;
 
   // Use terminal dimensions for COVER mode
   const int target_width = options.width;
-  const int target_height = options.height * 2; // Double height since we use 2 rows per character
+  const int target_height =
+      options.height * 2; // Double height since we use 2 rows per character
 
   std::cout << "\033[2J\033[?25l" << std::flush; // Clear screen, hide cursor
 
   // Start audio
-  std::string audio_cmd = "ffplay -nodisp -autoexit -vn -nostats -loglevel quiet -sync video \"" + 
-                         std::string(videoPath) + "\" 2>/dev/null &";
+  std::string audio_cmd =
+      "ffplay -nodisp -autoexit -vn -nostats -loglevel quiet -sync video \"" +
+      std::string(videoPath) + "\" 2>/dev/null &";
   std::system(audio_cmd.c_str());
 
-  const auto frame_duration = std::chrono::microseconds(static_cast<int64_t>(1000000.0 / fps));
+  const auto frame_duration =
+      std::chrono::microseconds(static_cast<int64_t>(1000000.0 / fps));
   const auto start_time = std::chrono::steady_clock::now();
-  
+
   int frames_displayed = 0, frames_dropped = 0;
   cv::Mat frame, resized_frame;
 
   while (cap.read(frame)) {
-    if (frame.empty()) break;
+    if (frame.empty())
+      break;
 
     const auto frame_start = std::chrono::steady_clock::now();
 
     // Resize frame for COVER mode
-    cv::resize(frame, resized_frame, cv::Size(target_width, target_height), 0, 0, cv::INTER_NEAREST);
+    cv::resize(frame, resized_frame, cv::Size(target_width, target_height), 0,
+               0, cv::INTER_NEAREST);
 
     // Use ultra-fast renderer (no SIXEL)
     const std::string frame_output = renderVideoUltraFast(resized_frame);
@@ -759,7 +781,7 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
     // Frame timing
     const auto target_time = start_time + (frames_displayed * frame_duration);
     const auto now = std::chrono::steady_clock::now();
-    
+
     if (now < target_time) {
       std::this_thread::sleep_until(target_time);
     } else {
@@ -769,12 +791,13 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
 
   std::cout << "\033[?25h"; // Show cursor
   std::system("pkill -f 'ffplay.*-nodisp' 2>/dev/null");
-  
-  double drop_rate = frames_displayed > 0 ? 100.0 * frames_dropped / frames_displayed : 0.0;
-  std::cout << "\nPerformance: Displayed=" << frames_displayed 
-            << " Dropped=" << frames_dropped << " (" << std::fixed << std::setprecision(1) 
-            << drop_rate << "%) ULTRA-FAST MODE" << std::endl;
+
+  double drop_rate =
+      frames_displayed > 0 ? 100.0 * frames_dropped / frames_displayed : 0.0;
+  std::cout << "\nPerformance: Displayed=" << frames_displayed
+            << " Dropped=" << frames_dropped << " (" << std::fixed
+            << std::setprecision(1) << drop_rate << "%) ULTRA-FAST MODE"
+            << std::endl;
 
   return true;
 }
-
