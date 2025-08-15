@@ -37,7 +37,7 @@ std::pair<int, int> calculateBestFitSize(int contentWidth, int contentHeight,
   return {outw, outh};
 }
 
-bool process_image(std::string url) {
+bool process_image(std::string url, Sakura::RenderMode mode = Sakura::SIXEL) {
   Sakura sakura;
   bool stat = false;
   auto [termPixW, termPixH] = getTerminalPixelSize();
@@ -60,7 +60,7 @@ bool process_image(std::string url) {
       calculateBestFitSize(img.cols, img.rows, termPixW, termPixH);
 
   Sakura::RenderOptions options;
-  options.mode = Sakura::SIXEL;
+  options.mode = mode;
   options.dither = Sakura::FLOYD_STEINBERG;
   options.terminalAspectRatio = 1.0;
   options.width = outw;
@@ -69,7 +69,7 @@ bool process_image(std::string url) {
   return sakura.renderFromMat(img, options);
 }
 
-bool process_gif(std::string url) {
+bool process_gif(std::string url, Sakura::RenderMode mode = Sakura::SIXEL) {
   Sakura sakura;
   bool stat = false;
   auto [termPixW, termPixH] = getTerminalPixelSize();
@@ -77,7 +77,7 @@ bool process_gif(std::string url) {
   // For GIF, we'll let the sakura library handle sizing internally
   // but still set reasonable defaults
   Sakura::RenderOptions options;
-  options.mode = Sakura::SIXEL;
+  options.mode = mode;
   options.dither = Sakura::FLOYD_STEINBERG;
   options.terminalAspectRatio = 1.0;
   options.width = termPixW;
@@ -86,7 +86,7 @@ bool process_gif(std::string url) {
   return sakura.renderGifFromUrl(url, options);
 }
 
-bool process_video(std::string url) {
+bool process_video(std::string url, Sakura::RenderMode mode = Sakura::SIXEL) {
   Sakura sakura;
   bool stat = false;
   auto [termPixW, termPixH] = getTerminalPixelSize();
@@ -94,7 +94,7 @@ bool process_video(std::string url) {
   // For video, we'll let the sakura library handle sizing internally
   // but still set reasonable defaults
   Sakura::RenderOptions options;
-  options.mode = Sakura::SIXEL;
+  options.mode = mode;
   options.dither = Sakura::FLOYD_STEINBERG;
   options.terminalAspectRatio = 1.0;
   options.width = termPixW;
@@ -103,7 +103,7 @@ bool process_video(std::string url) {
   return sakura.renderVideoFromUrl(url, options);
 }
 
-bool process_local_video(std::string path) {
+bool process_local_video(std::string path, Sakura::RenderMode mode = Sakura::SIXEL) {
   Sakura sakura;
   bool stat = false;
   auto [termPixW, termPixH] = getTerminalPixelSize();
@@ -111,7 +111,7 @@ bool process_local_video(std::string path) {
   // For video, we'll let the sakura library handle sizing internally
   // but still set reasonable defaults
   Sakura::RenderOptions options;
-  options.mode = Sakura::SIXEL;
+  options.mode = mode;
   options.dither = Sakura::FLOYD_STEINBERG;
   options.terminalAspectRatio = 1.0;
   options.width = termPixW;
@@ -129,18 +129,20 @@ int main(int argc, char **argv) {
       {"gif",         required_argument, 0, 'g'},
       {"video",       required_argument, 0, 'v'},
       {"local-video", required_argument, 0, 'l'},
+      {"backend",     required_argument, 0, 'b'},
       {0, 0, 0, 0}
   };
   
   std::string video_path, image_path;
   bool show_help = false;
+  Sakura::RenderMode graphics_backend = Sakura::SIXEL;  // Default to sixel
   
   int opt;
   int option_index = 0;
   bool stat = false;
 
   if (argc > 1) {
-    while ((opt = getopt_long(argc, argv, "hv:i:g:l:", long_options, &option_index)) != -1) {
+    while ((opt = getopt_long(argc, argv, "hv:i:g:l:b:", long_options, &option_index)) != -1) {
       switch (opt) {
         case 'h':
           std::cout << "Usage: sakura [options]\n"
@@ -150,23 +152,35 @@ int main(int argc, char **argv) {
                     << "  -g, --gif <path>           Process GIF file\n"
                     << "  -v, --video <path>         Process video file\n"
                     << "  -l, --local-video <path>   Process local video file\n"
+                    << "  -b, --backend <backend>    Graphics backend (sixel, kitty)\n"
           ;
           return 0;
                   
         case 'i':
-          stat = process_image( optarg );
+          stat = process_image( optarg, graphics_backend );
           break;
         
         case 'g':
-          stat = process_gif( optarg );
+          stat = process_gif( optarg, graphics_backend );
           break;
         
         case 'v':
-          stat = process_video( optarg );
+          stat = process_video( optarg, graphics_backend );
           break;
         
         case 'l':
-          stat = process_local_video( optarg );
+          stat = process_local_video( optarg, graphics_backend );
+          break;
+          
+        case 'b':
+          if (std::string(optarg) == "kitty") {
+            graphics_backend = Sakura::KITTY;
+          } else if (std::string(optarg) == "sixel") {
+            graphics_backend = Sakura::SIXEL;
+          } else {
+            std::cerr << "Unknown backend: " << optarg << ". Supported: sixel, kitty" << std::endl;
+            return 1;
+          }
           break;
           
         case '?':
@@ -209,7 +223,7 @@ int main(int argc, char **argv) {
     std::cout << "Enter image URL: ";
     std::cin >> url;
     std::cout << "Rendering image...\n";
-    stat = process_image(url);
+    stat = process_image(url, graphics_backend);
     break;
   }
   case 2: {

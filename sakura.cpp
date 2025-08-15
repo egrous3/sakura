@@ -15,6 +15,7 @@
 #include <string_view>
 #include <thread>
 #include <vector>
+#include <cstring>
 
 const std::string Sakura::ASCII_CHARS_SIMPLE = " .:-=+*#%@";
 const std::string Sakura::ASCII_CHARS_DETAILED =
@@ -123,6 +124,20 @@ bool Sakura::renderFromMat(const cv::Mat &img,
 
     const std::string sixelData = renderSixel(processed, options.paletteSize);
     std::cout << sixelData << std::flush;
+    return true;
+  }
+
+  if (options.mode == KITTY) {
+    cv::Mat processed;
+    if (img.cols != options.width || img.rows != options.height) {
+      cv::resize(img, processed, cv::Size(options.width, options.height), 0, 0,
+                 cv::INTER_NEAREST);
+    } else {
+      processed = img;
+    }
+
+    const std::string kittyData = renderKitty(processed);
+    std::cout << kittyData << std::flush;
     return true;
   }
 
@@ -466,6 +481,88 @@ std::string Sakura::renderSixel(const cv::Mat &img, int paletteSize) const {
   return sixel_output_string;
 }
 
+namespace {
+// Base64 encoding table
+const char base64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+std::string base64_encode(const std::vector<uchar> &data) {
+  std::string result;
+  int val = 0, valb = -6;
+  for (uchar c : data) {
+    val = (val << 8) + c;
+    valb += 8;
+    while (valb >= 0) {
+      result.push_back(base64_table[(val >> valb) & 0x3F]);
+      valb -= 6;
+    }
+  }
+  if (valb > -6) result.push_back(base64_table[((val << 8) >> (valb + 8)) & 0x3F]);
+  while (result.size() % 4) result.push_back('=');
+  return result;
+}
+} // namespace
+
+std::string Sakura::renderKitty(const cv::Mat &img) const {
+  if (img.empty()) {
+    return "";
+  }
+
+  // Convert BGR to RGB and encode as PNG in memory
+  cv::Mat rgb_img;
+  cv::cvtColor(img, rgb_img, cv::COLOR_BGR2RGB);
+  
+  std::vector<uchar> png_data;
+  cv::imencode(".png", rgb_img, png_data);
+  
+  // Base64 encode the PNG data
+  std::string encoded_data = base64_encode(png_data);
+  
+  std::string kitty_output;
+  kitty_output.reserve(encoded_data.size() + 1024);
+  
+  // Split data into chunks (max 4096 bytes per chunk)
+  const size_t chunk_size = 4096;
+  size_t pos = 0;
+  
+  while (pos < encoded_data.size()) {
+    kitty_output += "\033_G";
+    
+    // First chunk includes format and transmission parameters
+    if (pos == 0) {
+      kitty_output += "a=T,f=100";  // Transmit and display, PNG format
+    }
+    
+    // Get chunk
+    size_t remaining = encoded_data.size() - pos;
+    size_t current_chunk_size = std::min(chunk_size, remaining);
+    std::string chunk = encoded_data.substr(pos, current_chunk_size);
+    pos += current_chunk_size;
+    
+    // Add continuation marker if not last chunk
+    if (pos < encoded_data.size()) {
+      if (pos == current_chunk_size) {
+        kitty_output += ",m=1";  // First chunk with more data
+      } else {
+        kitty_output += "m=1";   // Continuation chunk
+      }
+    } else {
+      if (pos > current_chunk_size) {
+        kitty_output += "m=0";   // Last chunk
+      }
+    }
+    
+    // Add the data
+    if (!chunk.empty()) {
+      kitty_output += ";";
+      kitty_output += chunk;
+    }
+    
+    kitty_output += "\033\\";
+  }
+  
+  return kitty_output;
+}
+
 bool Sakura::renderGridFromUrls(const std::vector<std::string> &urls, int cols,
                                 const RenderOptions &options) const {
   if (urls.empty() || cols <= 0) {
@@ -591,9 +688,10 @@ bool Sakura::renderGifFromUrl(std::string_view gifUrl,
 
     cv::resize(frame, resized_frame, target_size, 0, 0, cv::INTER_NEAREST);
 
-    const std::string sixel_data =
+    const std::string frame_data = (gifOptions.mode == KITTY) ?
+        renderKitty(resized_frame) :
         renderSixel(resized_frame, gifOptions.paletteSize);
-    std::cout << "\033[H" << sixel_data;
+    std::cout << "\033[H" << frame_data;
 
     frame_number++;
 
@@ -732,7 +830,9 @@ bool Sakura::renderVideoFromFile(std::string_view videoPath,
 
     cv::resize(frame, resized_frame, target_size, 0, 0, cv::INTER_NEAREST);
 
-    sixel_data = renderSixel(resized_frame, videoOptions.paletteSize);
+    sixel_data = (videoOptions.mode == KITTY) ?
+        renderKitty(resized_frame) :
+        renderSixel(resized_frame, videoOptions.paletteSize);
 
     std::cout << "\033[H" << sixel_data;
     frames_rendered++;

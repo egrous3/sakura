@@ -9,7 +9,7 @@
 class Sakura {
 public:
   enum CharStyle { SIMPLE, DETAILED, BLOCKS };
-  enum RenderMode { EXACT, ASCII_COLOR, ASCII_GRAY, SIXEL };
+  enum RenderMode { EXACT, ASCII_COLOR, ASCII_GRAY, SIXEL, KITTY };
   enum DitherMode { NONE, FLOYD_STEINBERG };
 
   struct RenderOptions {
@@ -53,6 +53,7 @@ private:
                                                 std::string_view charSet,
                                                 DitherMode dither) const;
   std::string renderSixel(const cv::Mat &img, int paletteSize = 16) const;
+  std::string renderKitty(const cv::Mat &img) const;
   cv::Mat quantizeImage(const cv::Mat &inputImg, int numColors,
                         cv::Mat &palette) const;
   bool preprocessAndResize(const cv::Mat &img, const RenderOptions &options,
