@@ -1,13 +1,12 @@
 #include "sakura.hpp"
 #include <cpr/cpr.h>
+#include <getopt.h>
 #include <iostream>
 #include <opencv2/opencv.hpp>
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include <utility>
-#include <getopt.h>
 
-// Helper to get terminal pixel size (returns {width, height} in pixels)
 std::pair<int, int> getTerminalPixelSize() {
   struct winsize w;
   if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0 && w.ws_xpixel > 0 &&
@@ -18,7 +17,15 @@ std::pair<int, int> getTerminalPixelSize() {
   return {1920, 1080};
 }
 
-// Helper to calculate best-fit dimensions for content
+std::pair<int, int> getTerminalCharSize() {
+  struct winsize w;
+  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0) {
+    return {w.ws_col, w.ws_row};
+  }
+  // Fallback
+  return {80, 24};
+}
+
 std::pair<int, int> calculateBestFitSize(int contentWidth, int contentHeight,
                                          int termWidth, int termHeight) {
   double contentAspect = static_cast<double>(contentWidth) / contentHeight;
@@ -55,7 +62,7 @@ bool process_image(std::string url) {
     return 1;
   }
 
-  // Calculate proper dimensions for this image
+  // calculate proper dimensions for this image
   auto [outw, outh] =
       calculateBestFitSize(img.cols, img.rows, termPixW, termPixH);
 
@@ -75,7 +82,6 @@ bool process_gif(std::string url) {
   auto [termPixW, termPixH] = getTerminalPixelSize();
 
   // For GIF, we'll let the sakura library handle sizing internally
-  // but still set reasonable defaults
   Sakura::RenderOptions options;
   options.mode = Sakura::SIXEL;
   options.dither = Sakura::FLOYD_STEINBERG;
@@ -92,7 +98,6 @@ bool process_video(std::string url) {
   auto [termPixW, termPixH] = getTerminalPixelSize();
 
   // For video, we'll let the sakura library handle sizing internally
-  // but still set reasonable defaults
   Sakura::RenderOptions options;
   options.mode = Sakura::SIXEL;
   options.dither = Sakura::FLOYD_STEINBERG;
@@ -106,16 +111,26 @@ bool process_video(std::string url) {
 bool process_local_video(std::string path) {
   Sakura sakura;
   bool stat = false;
-  auto [termPixW, termPixH] = getTerminalPixelSize();
+  auto [termCols, termRows] = getTerminalCharSize(); // Use character dimensions
 
-  // For video, we'll let the sakura library handle sizing internally
-  // but still set reasonable defaults
+  // Ultra-fast settings for maximum performance
   Sakura::RenderOptions options;
-  options.mode = Sakura::SIXEL;
-  options.dither = Sakura::FLOYD_STEINBERG;
+  options.mode = Sakura::ULTRA_FAST;
+  options.dither = Sakura::NONE;
   options.terminalAspectRatio = 1.0;
-  options.width = termPixW;
-  options.height = termPixH;
+  options.width = termCols;
+  options.height = termRows;
+  options.queueSize = 1;
+  options.prebufferFrames = 1;
+  options.staticPalette = true;
+  options.fastResize = true;
+  options.targetFps = 0.0; // Follow source FPS
+  options.adaptivePalette = false;
+  options.adaptiveScale = false;
+  options.hwAccelPipe = false;
+  options.tileUpdates = false;
+  options.fit = Sakura::FitMode::COVER; // Fill terminal
+  options.sixelQuality = Sakura::SixelQuality::HIGH;
 
   stat = sakura.renderVideoFromFile(path, options);
   return stat;
@@ -124,58 +139,57 @@ bool process_local_video(std::string path) {
 int main(int argc, char **argv) {
   // Parse command line arguments
   static struct option long_options[] = {
-      {"help",        no_argument,       0, 'h'},
-      {"image",       required_argument, 0, 'i'},
-      {"gif",         required_argument, 0, 'g'},
-      {"video",       required_argument, 0, 'v'},
+      {"help", no_argument, 0, 'h'},
+      {"image", required_argument, 0, 'i'},
+      {"gif", required_argument, 0, 'g'},
+      {"video", required_argument, 0, 'v'},
       {"local-video", required_argument, 0, 'l'},
-      {0, 0, 0, 0}
-  };
-  
+      {0, 0, 0, 0}};
+
   std::string video_path, image_path;
   bool show_help = false;
-  
+
   int opt;
   int option_index = 0;
   bool stat = false;
 
   if (argc > 1) {
-    while ((opt = getopt_long(argc, argv, "hv:i:g:l:", long_options, &option_index)) != -1) {
+    while ((opt = getopt_long(argc, argv, "hv:i:g:l:", long_options,
+                              &option_index)) != -1) {
       switch (opt) {
-        case 'h':
-          std::cout << "Usage: sakura [options]\n"
-                    << "Options:\n"
-                    << "  -h, --help                 Show help message\n"
-                    << "  -i, --image <path>         Process image file\n"
-                    << "  -g, --gif <path>           Process GIF file\n"
-                    << "  -v, --video <path>         Process video file\n"
-                    << "  -l, --local-video <path>   Process local video file\n"
-          ;
-          return 0;
-                  
-        case 'i':
-          stat = process_image( optarg );
-          break;
-        
-        case 'g':
-          stat = process_gif( optarg );
-          break;
-        
-        case 'v':
-          stat = process_video( optarg );
-          break;
-        
-        case 'l':
-          stat = process_local_video( optarg );
-          break;
-          
-        case '?':
-          // getopt_long automatically prints error message
-          return 1;
-          
-        default:
-          std::cerr << "Unknown option: " << opt << std::endl;
-          return 1;
+      case 'h':
+        std::cout << "Usage: sakura [options]\n"
+                  << "Options:\n"
+                  << "  -h, --help                 Show help message\n"
+                  << "  -i, --image <path>         Process image file\n"
+                  << "  -g, --gif <path>           Process GIF file\n"
+                  << "  -v, --video <path>         Process video file\n"
+                  << "  -l, --local-video <path>   Process local video file\n";
+        return 0;
+
+      case 'i':
+        stat = process_image(optarg);
+        break;
+
+      case 'g':
+        stat = process_gif(optarg);
+        break;
+
+      case 'v':
+        stat = process_video(optarg);
+        break;
+
+      case 'l':
+        stat = process_local_video(optarg);
+        break;
+
+      case '?':
+        // getopt_long automatically prints error message
+        return 1;
+
+      default:
+        std::cerr << "Unknown option: " << opt << std::endl;
+        return 1;
       }
     }
     if (!stat) {
@@ -183,11 +197,11 @@ int main(int argc, char **argv) {
     }
     return 0;
   }
-	
-	// Handle any remaining non-option arguments
-	for (int i = optind; i < argc; i++) {
-		std::cout << "Non-option argument: " << argv[i] << std::endl;
-	}
+
+  // Handle any remaining non-option arguments
+  for (int i = optind; i < argc; i++) {
+    std::cout << "Non-option argument: " << argv[i] << std::endl;
+  }
 
   // Continue to existing interactive mode
   Sakura sakura;
